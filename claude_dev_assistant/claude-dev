@@ -1,0 +1,9 @@
+#!/bin/bash
+# Claude Dev Assistant - CLI Wrapper
+# 使用方式: ./claude-dev develop "需求"
+
+CLAUDE_DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLAUDE_BIN="/home/node/.openclaw/workspace/tools/bin/claude"
+
+# 运行
+exec python3 -m claude_dev_assistant.driver "$@"

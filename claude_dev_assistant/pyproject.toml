@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-dev-assistant"
+version = "0.1.0"
+description = "Claude Dev Assistant - 全流程自动化开发工具"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+claude-dev = "claude_dev_assistant.driver:main"
