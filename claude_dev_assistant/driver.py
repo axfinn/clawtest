@@ -8,107 +8,46 @@ import subprocess
 import json
 import sys
 import os
+import re
 import time
-import threading
+import shutil
 from pathlib import Path
 from datetime import datetime
 
+from core.shared import Logger, ProgressReporter
+
 # 默认路径 - 使用当前文件所在目录作为项目根目录
-DEFAULT_CLAUDE_BIN = Path('/usr/local/bin/claude')
 PROJECT_ROOT = Path(__file__).parent.resolve()
-LOG_DIR = PROJECT_ROOT / '.claude' / 'logs'
+# 注意: LOG_DIR 现在是动态计算的，不再是模块级常量
 
 
-class Logger:
-    """日志记录器 - 支持滚动写入"""
+def find_claude_binary() -> Path:
+    """自动检测 Claude CLI 安装位置"""
+    # 常见安装位置
+    possible_paths = [
+        Path('/usr/local/bin/claude'),           # Linux/macOS brew
+        Path('/opt/homebrew/bin/claude'),        # macOS ARM brew
+        Path('/usr/bin/claude'),                 # Linux 系统
+        Path.home() / '.local' / 'bin' / 'claude',  # Linux user local
+        Path.home() / 'bin' / 'claude',          # 用户 bin
+        Path('/home/linuxbrew/.linuxbrew/bin/claude'),  # Linuxbrew
+    ]
 
-    def __init__(self, log_dir: Path = LOG_DIR, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5):
-        self.log_dir = log_dir
-        self.log_file = log_dir / 'driver.log'
-        self.max_bytes = max_bytes
-        self.backup_count = backup_count
-        self._lock = threading.Lock()
-        log_dir.mkdir(parents=True, exist_ok=True)
+    # 首先检查常见路径
+    for path in possible_paths:
+        if path.exists() and path.is_file():
+            return path
 
-    def write(self, message: str, level: str = "INFO"):
-        """写入日志"""
-        with self._lock:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_line = f"[{timestamp}] [{level}] {message}\n"
+    # 尝试通过 which 命令查找
+    claude_path = shutil.which('claude')
+    if claude_path:
+        return Path(claude_path)
 
-            # 滚动日志
-            if self.log_file.exists() and self.log_file.stat().st_size >= self.max_bytes:
-                self._rotate()
-
-            with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write(log_line)
-
-    def _rotate(self):
-        """日志滚动"""
-        # 删除最旧的
-        oldest = self.log_dir / f'driver.{self.backup_count}.log'
-        if oldest.exists():
-            oldest.unlink()
-
-        # 滚动
-        for i in range(self.backup_count - 1, 0, -1):
-            src = self.log_dir / f'driver.{i}.log'
-            dst = self.log_dir / f'driver.{i + 1}.log'
-            if src.exists():
-                src.rename(dst)
-
-        # 当前日志重命名
-        if self.log_file.exists():
-            self.log_file.rename(self.log_dir / 'driver.1.log')
-
-    def info(self, msg: str):
-        self.write(msg, "INFO")
-
-    def error(self, msg: str):
-        self.write(msg, "ERROR")
-
-    def warning(self, msg: str):
-        self.write(msg, "WARNING")
+    # 都找不到，返回默认路径（让用户自己配置）
+    return Path('/usr/local/bin/claude')
 
 
-class ProgressReporter:
-    """定时进度 reporter - 防止卡死"""
-
-    def __init__(self, interval: int = 30, logger: Logger = None):
-        self.interval = interval
-        self.running = False
-        self.thread = None
-        self.message = "运行中..."
-        self.start_time = None
-        self.logger = logger
-
-    def start(self, message: str = "运行中..."):
-        """启动进度报告"""
-        self.message = message
-        self.start_time = time.time()
-        self.running = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def update(self, message: str):
-        """更新消息"""
-        self.message = message
-
-    def stop(self):
-        """停止报告"""
-        self.running = False
-
-    def _run(self):
-        """后台报告线程"""
-        while self.running:
-            elapsed = int(time.time() - self.start_time)
-            mins = elapsed // 60
-            secs = elapsed % 60
-            msg = f"  ⏱️ [{mins:02d}:{secs:02d}] {self.message}"
-            print(msg, flush=True)
-            if self.logger:
-                self.logger.info(msg)
-            time.sleep(self.interval)
+DEFAULT_CLAUDE_BIN = find_claude_binary()
 
 
 class ClaudeDriver:
@@ -117,7 +56,9 @@ class ClaudeDriver:
     def __init__(self, project_path: Path = None, claude_bin: Path = None):
         self.project_path = project_path or PROJECT_ROOT
         self.claude_bin = claude_bin or DEFAULT_CLAUDE_BIN
-        self.logger = Logger(LOG_DIR)
+        # 日志写到目标项目目录的 .claude/logs/ 下
+        log_dir = self.project_path / '.claude' / 'logs'
+        self.logger = Logger(log_dir)
         self.reporter = ProgressReporter(interval=30, logger=self.logger)  # 每30秒报告一次
 
     def log(self, message: str, level: str = "INFO"):
@@ -125,55 +66,67 @@ class ClaudeDriver:
         print(message, flush=True)
         self.logger.write(message, level)
 
-    def call_claude(self, prompt: str, timeout: int = None) -> str:
-        """调用 Claude Code CLI - 永不超时"""
-        cmd = [
-            str(self.claude_bin),
-            '--print',
-            '--dangerously-skip-permissions',
-            '-p', prompt
-        ]
+    def call_claude(self, prompt: str, timeout: int = None, max_retries: int = 3) -> str:
+        """调用 Claude Code CLI - 使用循环重试而非递归"""
+        retry_count = 0
 
-        # 使用干净的环境，避免会话冲突
-        env = os.environ.copy()
-        env.pop('CLAUDE_AI_SESSION_KEY', None)
-        env.pop('CLAUDE_WEB_SESSION_KEY', None)
+        while retry_count < max_retries:
+            cmd = [
+                str(self.claude_bin),
+                '--print',
+                '--dangerously-skip-permissions',
+                '-p', prompt
+            ]
 
-        # 确保目标目录存在
-        if self.project_path:
-            self.project_path.mkdir(parents=True, exist_ok=True)
+            # 使用干净的环境，避免会话冲突
+            env = os.environ.copy()
+            env.pop('CLAUDE_AI_SESSION_KEY', None)
+            env.pop('CLAUDE_WEB_SESSION_KEY', None)
 
-        # 启动进度报告
-        self.reporter.start("等待 Claude 响应...")
+            # 确保目标目录存在
+            if self.project_path:
+                self.project_path.mkdir(parents=True, exist_ok=True)
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,  # None 表示永不超时
-                cwd=str(self.project_path) if self.project_path.exists() else str(PROJECT_ROOT),
-                env=env
-            )
+            # 启动进度报告
+            if retry_count == 0:
+                self.reporter.start("等待 Claude 响应...")
 
-            self.reporter.stop()
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,  # None 表示永不超时
+                    cwd=str(self.project_path) if self.project_path.exists() else str(PROJECT_ROOT),
+                    env=env
+                )
 
-            output = result.stdout.strip() or result.stderr.strip()
+                self.reporter.stop()
 
-            if result.returncode == 0 or output:
-                return output
-            else:
-                print(f"  ⚠️ Claude Error: {result.stderr[:200]}", file=sys.stderr)
+                output = result.stdout.strip() or result.stderr.strip()
+
+                if result.returncode == 0 or output:
+                    return output
+                else:
+                    print(f"  ⚠️ Claude Error: {result.stderr[:200]}", file=sys.stderr)
+                    return None
+
+            except subprocess.TimeoutExpired:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    self.reporter.stop()
+                    print(f"  ⚠️ Claude 响应超时，已重试 {max_retries} 次", file=sys.stderr)
+                    return None
+                self.reporter.update(f"Claude 响应超时，重试 {retry_count}/{max_retries}...")
+                time.sleep(2)  # 短暂等待后重试
+                continue
+
+            except Exception as e:
+                self.reporter.stop()
+                print(f"  ⚠️ 调用失败: {e}", file=sys.stderr)
                 return None
 
-        except subprocess.TimeoutExpired:
-            self.reporter.update("Claude 响应超时，继续等待...")
-            # 永不超时，继续等待
-            return self.call_claude(prompt, timeout=None)
-        except Exception as e:
-            self.reporter.stop()
-            print(f"  ⚠️ 调用失败: {e}", file=sys.stderr)
-            return None
+        return None
     
     def analyze_requirement(self, requirement: str) -> dict:
         """分析需求"""
@@ -303,6 +256,12 @@ class ClaudeDriver:
         
         return {'score': max(0, 10 - len(issues)), 'issues': issues, 'passed': len(issues) == 0}
 
+    def _is_mcp_available(self) -> bool:
+        """检测 MCP 工具是否可用 - 通过检查环境变量"""
+        # MCP 工具只在 Claude Code CLI 运行时可用
+        # 检查是否在正确的环境中
+        return os.environ.get('CLAUDE_API_KEY') is not None
+
     def list_existing_files(self) -> list:
         """列出已有文件（让 Claude 自己分析）"""
         if not self.project_path.exists():
@@ -338,17 +297,22 @@ class ClaudeDriver:
         self.log(f"  🔍 WebSearch: {search_keywords[:30]}...")
 
         # 使用 MCP 工具搜索
+        search_info = ""
         try:
-            from mcp__MiniMax__web_search import mcp__MiniMax__web_search
-            search_results = mcp__MiniMax__web_search(query=search_keywords)
-            search_info = ""
-            if search_results and search_results.get('organic'):
-                for item in search_results['organic'][:3]:
-                    search_info += f"- {item.get('title', '')}: {item.get('snippet', '')[:100]}...\n"
-                self.log(f"  → 找到 {len(search_results.get('organic', []))} 个相关结果")
-        except:
-            search_info = ""
-            self.log("  ⚠️ WebSearch 不可用，跳过")
+            # 检查是否在 Claude Code 环境中
+            if 'mcp__MiniMax__web_search' in globals() or self._is_mcp_available():
+                # 直接调用 MCP 工具，不需要 import
+                search_results = mcp__MiniMax__web_search(query=search_keywords)
+                if search_results and search_results.get('organic'):
+                    for item in search_results['organic'][:3]:
+                        search_info += f"- {item.get('title', '')}: {item.get('snippet', '')[:100]}...\n"
+                    self.log(f"  → 找到 {len(search_results.get('organic', []))} 个相关结果")
+            else:
+                self.log("  ⚠️ WebSearch (MCP) 不可用（非 Claude Code 环境），跳过")
+        except NameError:
+            self.log("  ⚠️ WebSearch (MCP) 不可用，跳过")
+        except Exception as e:
+            self.log(f"  ⚠️ WebSearch 调用失败: {e}")
 
         research_prompt = f"""你是软件工程师。请根据以下需求进行调研。
 
@@ -415,6 +379,18 @@ WebSearch 参考结果:
                 analysis_data = json.loads(analysis_result.strip())
                 self.log(f"  → 功能点: {analysis_data.get('features', [])}")
                 self.log(f"  → 复杂度: {analysis_data.get('complexity', 'unknown')}")
+
+                # 调用 Claude 生成详细的需求规格文档
+                self.reporter.start("Claude 生成需求规格文档...")
+                spec_content = self.generate_spec(requirement, analysis_data)
+                self.reporter.stop()
+
+                # 保存详细需求文档到 docs/
+                docs_dir = self.project_path / 'docs'
+                docs_dir.mkdir(parents=True, exist_ok=True)
+                requirements_path = docs_dir / '01-REQUIREMENTS.md'
+                requirements_path.write_text(spec_content)
+                self.log(f"  ✅ docs/01-REQUIREMENTS.md")
             except:
                 pass
 
@@ -454,11 +430,23 @@ WebSearch 参考结果:
             except:
                 pass
 
-        # 保存设计文档
-        if design_data.get('architecture'):
-            design_path = self.project_path / 'DESIGN.md'
-            design_path.write_text(f"# 技术方案\n\n{design_data.get('architecture', '')}")
-            self.log(f"  ✅ DESIGN.md")
+        # 调用 Claude 生成详细的技术方案文档
+        self.reporter.start("Claude 生成技术方案文档...")
+        spec = ""
+        if analysis_data and docs_dir:
+            spec_path = docs_dir / '01-REQUIREMENTS.md'
+            if spec_path.exists():
+                spec = spec_path.read_text()
+        design_content = self.generate_design(requirement, analysis_data or {}, spec)
+        self.reporter.stop()
+
+        # 保存详细技术方案文档到 docs/
+        if design_content:
+            docs_dir = self.project_path / 'docs'
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            design_path = docs_dir / '02-DESIGN.md'
+            design_path.write_text(design_content)
+            self.log(f"  ✅ docs/02-DESIGN.md")
 
         # ========== 阶段 4: 代码实现 (Claude 干活) ==========
         self.log("\n" + "="*50)
@@ -492,8 +480,7 @@ WebSearch 参考结果:
             files = data.get('files', [])
         except:
             self.log("  ⚠️ 解析失败，尝试其他方式", "WARNING")
-            # 尝试提取文件
-            import re
+            # 尝试提取文件（re 已在文件顶部导入）
             file_matches = re.findall(r'"path"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"', result, re.DOTALL)
             for path, content in file_matches:
                 files.append({'path': path, 'content': content})
@@ -539,12 +526,38 @@ WebSearch 参考结果:
         self.reporter.stop()
 
         test_files = []
+        test_plan_content = ""
         if test_result:
             try:
                 if '```json' in test_result:
                     test_result = test_result.split('```json')[1].split('```')[0]
                 test_data = json.loads(test_result.strip())
                 test_files = test_data.get('test_files', [])
+
+                # 生成测试计划文档内容
+                test_plan_content = f"""# 测试计划
+
+## 测试目标
+验证 {requirement} 的功能实现
+
+## 功能点
+{chr(10).join(f"- {f}" for f in analysis_data.get('features', [])) if analysis_data else ''}
+
+## 测试文件
+{chr(10).join(f"- {tf['path']}" for tf in test_files)}
+
+## 测试覆盖点
+{test_data.get('coverage_points', []) if isinstance(test_data, dict) else ''}
+"""
+
+                # 保存测试计划文档到 docs/
+                docs_dir = self.project_path / 'docs'
+                docs_dir.mkdir(parents=True, exist_ok=True)
+                test_plan_path = docs_dir / '03-TEST_PLAN.md'
+                test_plan_path.write_text(test_plan_content)
+                self.log(f"  ✅ docs/03-TEST_PLAN.md")
+
+                # 保存测试文件
                 for tf in test_files:
                     path = self.project_path / tf['path']
                     path.parent.mkdir(parents=True, exist_ok=True)
@@ -642,17 +655,80 @@ WebSearch 参考结果:
                 path = self.project_path / f['path']
                 path.write_text(f['content'])
                 self.log(f"  ✅ 改进: {f['path']}")
-                files = [fi for fi in files if fi['path'] != f['path']] + [f]
-
-            # 应用改进
-            self.log(f"  ⚠️ 发现 {len(issues)} 个问题，改进中...")
-            for f in improved:
-                path = self.project_path / f['path']
-                path.write_text(f['content'])
-                self.log(f"  ✅ 改进: {f['path']}")
 
             # 更新文件列表
             files = [f for f in files if f['path'] not in [i['path'] for i in improved]] + improved
+
+        # ========== Git 提交 ==========
+        self.log("\n" + "="*50)
+        self.log("📦 Git 提交")
+        self.log("="*50)
+
+        import subprocess
+        try:
+            # 检查是否是 git 仓库
+            result = subprocess.run(['git', 'rev-parse', '--git-dir'],
+                                    cwd=self.project_path, capture_output=True)
+            is_git_repo = result.returncode == 0
+
+            if not is_git_repo:
+                # 初始化 git 仓库
+                subprocess.run(['git', 'init'], cwd=self.project_path, check=True)
+                self.log("  ✅ Git 仓库初始化")
+
+                # 创建 .gitignore
+                gitignore_content = """# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+"""
+                gitignore_path = self.project_path / '.gitignore'
+                gitignore_path.write_text(gitignore_content)
+                self.log("  ✅ .gitignore 已创建")
+
+            # 选择性添加文件（代码文件和文档）
+            # 只添加代码文件、配置文件、文档，不添加日志和临时文件
+            subprocess.run(['git', 'add',
+                '*.py', '*.js', '*.ts', '*.jsx', '*.tsx',
+                '*.json', '*.yaml', '*.yml', '*.md',
+                '*.html', '*.css', '*.txt',
+                'docs/',
+                '-f'],  # 强制添加即使在 .gitignore 中
+                cwd=self.project_path, check=True, capture_output=True)
+
+            # 检查是否有要提交的文件
+            result = subprocess.run(['git', 'status', '--porcelain'],
+                                    cwd=self.project_path, capture_output=True)
+            if result.stdout.strip():
+                # 提交代码
+                commit_msg = f"feat: 开发 {requirement[:50]}..."
+                subprocess.run(['git', 'commit', '-m', commit_msg],
+                             cwd=self.project_path, check=True)
+                self.log("  ✅ 代码已提交")
+            else:
+                self.log("  ℹ️ 没有需要提交的新文件")
+
+        except subprocess.CalledProcessError as e:
+            self.log(f"  ⚠️ Git 操作失败: {e}")
+        except Exception as e:
+            self.log(f"  ⚠️ Git 提交失败: {e}")
 
         self.log("\n✅ 开发完成!")
         self.logger.info("=" * 50)
@@ -660,7 +736,7 @@ WebSearch 参考结果:
         return {
             'success': True,
             'files': [f['path'] for f in files],
-            'docs': ['SPEC.md', 'DESIGN.md']
+            'docs': ['docs/01-REQUIREMENTS.md', 'docs/02-DESIGN.md', 'docs/03-TEST_PLAN.md']
         }
 
 

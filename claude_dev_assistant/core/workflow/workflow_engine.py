@@ -2,103 +2,13 @@
 
 import subprocess
 import os
-import time
-import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import datetime
 
 from core.memory.memory_manager import MemoryManager
 from core.state.state_manager import StateManager
 from core.review.review_system import ReviewSystem
-
-
-class Logger:
-    """日志记录器 - 支持滚动写入"""
-
-    def __init__(self, log_dir: Path = None, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5):
-        if log_dir is None:
-            log_dir = Path.cwd() / '.claude' / 'logs'
-        self.log_dir = log_dir
-        self.log_file = log_dir / 'workflow.log'
-        self.max_bytes = max_bytes
-        self.backup_count = backup_count
-        self._lock = threading.Lock()
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-    def write(self, message: str, level: str = "INFO"):
-        """写入日志"""
-        with self._lock:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_line = f"[{timestamp}] [{level}] {message}\n"
-
-            # 滚动日志
-            if self.log_file.exists() and self.log_file.stat().st_size >= self.max_bytes:
-                self._rotate()
-
-            with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write(log_line)
-
-    def _rotate(self):
-        """日志滚动"""
-        oldest = self.log_dir / f'workflow.{self.backup_count}.log'
-        if oldest.exists():
-            oldest.unlink()
-
-        for i in range(self.backup_count - 1, 0, -1):
-            src = self.log_dir / f'workflow.{i}.log'
-            dst = self.log_dir / f'workflow.{i + 1}.log'
-            if src.exists():
-                src.rename(dst)
-
-        if self.log_file.exists():
-            self.log_file.rename(self.log_dir / 'workflow.1.log')
-
-    def info(self, msg: str):
-        self.write(msg, "INFO")
-
-    def error(self, msg: str):
-        self.write(msg, "ERROR")
-
-
-class ProgressReporter:
-    """定时进度 reporter - 防止卡死"""
-
-    def __init__(self, interval: int = 30, logger: Logger = None):
-        self.interval = interval
-        self.running = False
-        self.thread = None
-        self.message = "运行中..."
-        self.start_time = None
-        self.logger = logger
-
-    def start(self, message: str = "运行中..."):
-        """启动进度报告"""
-        self.message = message
-        self.start_time = time.time()
-        self.running = True
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def update(self, message: str):
-        """更新消息"""
-        self.message = message
-
-    def stop(self):
-        """停止报告"""
-        self.running = False
-
-    def _run(self):
-        """后台报告线程"""
-        while self.running:
-            elapsed = int(time.time() - self.start_time)
-            mins = elapsed // 60
-            secs = elapsed % 60
-            msg = f"  ⏱️ [{mins:02d}:{secs:02d}] {self.message}"
-            print(msg, flush=True)
-            if self.logger:
-                self.logger.info(msg)
-            time.sleep(self.interval)
+from core.shared import Logger, ProgressReporter
 
 
 class WorkflowEngine:
@@ -119,7 +29,7 @@ class WorkflowEngine:
         self.state_mgr = state_mgr
         self.review_system = ReviewSystem(memory_mgr)
         self.project_path = project_path or Path.cwd()
-        self.logger = Logger(self.project_path / '.claude' / 'logs')
+        self.logger = Logger(self.project_path / '.claude' / 'logs', log_name='workflow.log')
         self.reporter = ProgressReporter(interval=30, logger=self.logger)
 
         self.generated_files: List[str] = []
