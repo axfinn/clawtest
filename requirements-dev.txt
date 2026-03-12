@@ -1,0 +1,37 @@
+# 开发依赖
+# 安装命令: pip install -r requirements-dev.txt
+
+# 测试框架
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.0.0  # 并行测试
+
+# Mock 库
+responses>=0.21.0
+requests-mock>=1.10.0
+
+# 代码覆盖率
+coverage>=7.0.0
+
+# 异步测试 (如果需要)
+pytest-asyncio>=0.21.0
+
+# Flask 测试支持
+pytest-flask>=1.2.0
+
+# 类型检查 (可选)
+mypy>=1.0.0
+
+# 代码风格检查 (可选)
+flake8>=6.0.0
+black>=23.0.0
+isort>=5.12.0
+pylint>=2.17.0
+
+# 内存泄漏检测 (可选)
+pytest-leaks>=1.0.0
+
+# 性能测试 (可选)
+pytest-benchmark>=4.0.0
