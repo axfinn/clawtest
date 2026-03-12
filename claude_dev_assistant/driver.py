@@ -68,6 +68,18 @@ class ClaudeDriver:
 
     def call_claude(self, prompt: str, timeout: int = None, max_retries: int = 3) -> str:
         """调用 Claude Code CLI - 使用循环重试而非递归"""
+        # 检测是否在 Claude Code 嵌套环境中运行
+        if os.environ.get('CLAUDECODE'):
+            self.log("  ⚠️ 检测到嵌套运行，Claude CLI 无法在 Claude Code 环境中调用", "ERROR")
+            self.log("  💡 请直接使用 Claude Code 而非通过 driver.py 调用", "INFO")
+            return None
+
+        # 检查 Claude CLI 是否存在
+        if not self.claude_bin.exists():
+            self.log(f"  ❌ Claude CLI 不存在: {self.claude_bin}", "ERROR")
+            self.log("  💡 请安装 Claude Code 或指定正确路径: --claude /path/to/claude", "INFO")
+            return None
+
         retry_count = 0
 
         while retry_count < max_retries:
@@ -80,8 +92,10 @@ class ClaudeDriver:
 
             # 使用干净的环境，避免会话冲突
             env = os.environ.copy()
+            # 移除可能导致嵌套运行的环境变量
             env.pop('CLAUDE_AI_SESSION_KEY', None)
             env.pop('CLAUDE_WEB_SESSION_KEY', None)
+            env.pop('CLAUDECODE', None)  # 关键：移除嵌套检测变量
 
             # 确保目标目录存在
             if self.project_path:
@@ -105,6 +119,11 @@ class ClaudeDriver:
 
                 output = result.stdout.strip() or result.stderr.strip()
 
+                # 检测嵌套运行错误
+                if 'Claude Code cannot be launched inside another Claude Code session' in output:
+                    self.log("  ⚠️ 检测到嵌套运行！请直接使用 Claude Code", "ERROR")
+                    return None
+
                 if result.returncode == 0 or output:
                     return output
                 else:
@@ -120,6 +139,11 @@ class ClaudeDriver:
                 self.reporter.update(f"Claude 响应超时，重试 {retry_count}/{max_retries}...")
                 time.sleep(2)  # 短暂等待后重试
                 continue
+
+            except FileNotFoundError:
+                self.reporter.stop()
+                self.log(f"  ❌ Claude CLI 未找到: {self.claude_bin}", "ERROR")
+                return None
 
             except Exception as e:
                 self.reporter.stop()
