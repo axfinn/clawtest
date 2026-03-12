@@ -1,427 +1,390 @@
 #!/usr/bin/env python3
 """
 Claude Dev Assistant - 自驱开发核心
-优先使用 Claude CLI，fallback 到智能生成
+使用 Claude Code CLI 生成真正的可用代码
 """
 
 import subprocess
 import json
 import sys
 import os
+import time
+import threading
 from pathlib import Path
 from datetime import datetime
 
-# Claude CLI 路径
-CLAUDE_BIN = Path('/home/node/.openclaw/workspace/tools/bin/claude')
+# 默认路径
+DEFAULT_CLAUDE_BIN = Path('/home/node/.openclaw/workspace/tools/bin/claude')
 PROJECT_ROOT = Path('/home/node/.openclaw/workspace/clawtest')
+LOG_DIR = PROJECT_ROOT / '.claude' / 'logs'
+
+
+class Logger:
+    """日志记录器 - 支持滚动写入"""
+
+    def __init__(self, log_dir: Path = LOG_DIR, max_bytes: int = 10 * 1024 * 1024, backup_count: int = 5):
+        self.log_dir = log_dir
+        self.log_file = log_dir / 'driver.log'
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
+        self._lock = threading.Lock()
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+    def write(self, message: str, level: str = "INFO"):
+        """写入日志"""
+        with self._lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_line = f"[{timestamp}] [{level}] {message}\n"
+
+            # 滚动日志
+            if self.log_file.exists() and self.log_file.stat().st_size >= self.max_bytes:
+                self._rotate()
+
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(log_line)
+
+    def _rotate(self):
+        """日志滚动"""
+        # 删除最旧的
+        oldest = self.log_dir / f'driver.{self.backup_count}.log'
+        if oldest.exists():
+            oldest.unlink()
+
+        # 滚动
+        for i in range(self.backup_count - 1, 0, -1):
+            src = self.log_dir / f'driver.{i}.log'
+            dst = self.log_dir / f'driver.{i + 1}.log'
+            if src.exists():
+                src.rename(dst)
+
+        # 当前日志重命名
+        if self.log_file.exists():
+            self.log_file.rename(self.log_dir / 'driver.1.log')
+
+    def info(self, msg: str):
+        self.write(msg, "INFO")
+
+    def error(self, msg: str):
+        self.write(msg, "ERROR")
+
+    def warning(self, msg: str):
+        self.write(msg, "WARNING")
+
+
+class ProgressReporter:
+    """定时进度 reporter - 防止卡死"""
+
+    def __init__(self, interval: int = 30, logger: Logger = None):
+        self.interval = interval
+        self.running = False
+        self.thread = None
+        self.message = "运行中..."
+        self.start_time = None
+        self.logger = logger
+
+    def start(self, message: str = "运行中..."):
+        """启动进度报告"""
+        self.message = message
+        self.start_time = time.time()
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def update(self, message: str):
+        """更新消息"""
+        self.message = message
+
+    def stop(self):
+        """停止报告"""
+        self.running = False
+
+    def _run(self):
+        """后台报告线程"""
+        while self.running:
+            elapsed = int(time.time() - self.start_time)
+            mins = elapsed // 60
+            secs = elapsed % 60
+            msg = f"  ⏱️ [{mins:02d}:{secs:02d}] {self.message}"
+            print(msg, flush=True)
+            if self.logger:
+                self.logger.info(msg)
+            time.sleep(self.interval)
 
 
 class ClaudeDriver:
-    """Claude CLI 驱动核心"""
-    
-    def __init__(self, project_path: Path = None):
+    """Claude 开发驱动"""
+
+    def __init__(self, project_path: Path = None, claude_bin: Path = None):
         self.project_path = project_path or PROJECT_ROOT
-        self.history = []
-        self.use_claude = self._check_claude_available()
-    
-    def _check_claude_available(self) -> bool:
-        """检查 Claude CLI 是否可用"""
-        try:
-            result = subprocess.run(
-                [str(CLAUDE_BIN), '--print', '--dangerously-skip-permissions', 'test'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=self.project_path
-            )
-            # 检查是否返回了有效响应
-            if result.returncode == 0 or 'hello' in result.stdout.lower():
-                return True
-            return False
-        except Exception:
-            return False
-    
-    def call(self, prompt: str, system_prompt: str = None) -> str:
-        """调用 Claude CLI"""
-        if not self.use_claude:
-            return None  # 返回 None 使用 fallback
-        
-        cmd = [str(CLAUDE_BIN), '--print', '--dangerously-skip-permissions', '-p', prompt]
-        
-        if system_prompt:
-            cmd.extend(['--append-system-prompt', system_prompt])
-        
+        self.claude_bin = claude_bin or DEFAULT_CLAUDE_BIN
+        self.logger = Logger(LOG_DIR)
+        self.reporter = ProgressReporter(interval=30, logger=self.logger)  # 每30秒报告一次
+
+    def log(self, message: str, level: str = "INFO"):
+        """输出并记录日志"""
+        print(message, flush=True)
+        self.logger.write(message, level)
+
+    def call_claude(self, prompt: str, timeout: int = None) -> str:
+        """调用 Claude Code CLI - 永不超时"""
+        cmd = [
+            str(self.claude_bin),
+            '--print',
+            '--dangerously-skip-permissions',
+            '-p', prompt
+        ]
+
+        # 使用干净的环境，避免会话冲突
+        env = os.environ.copy()
+        env.pop('CLAUDE_AI_SESSION_KEY', None)
+        env.pop('CLAUDE_WEB_SESSION_KEY', None)
+
+        # 确保目标目录存在
+        if self.project_path:
+            self.project_path.mkdir(parents=True, exist_ok=True)
+
+        # 启动进度报告
+        self.reporter.start("等待 Claude 响应...")
+
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,
-                cwd=self.project_path
+                timeout=timeout,  # None 表示永不超时
+                cwd=str(self.project_path) if self.project_path.exists() else str(PROJECT_ROOT),
+                env=env
             )
-            
-            if result.returncode == 0:
-                return result.stdout.strip()
+
+            self.reporter.stop()
+
+            output = result.stdout.strip() or result.stderr.strip()
+
+            if result.returncode == 0 or output:
+                return output
             else:
-                print(f"Claude Error: {result.stderr}", file=sys.stderr)
+                print(f"  ⚠️ Claude Error: {result.stderr[:200]}", file=sys.stderr)
                 return None
-                
+
         except subprocess.TimeoutExpired:
-            print("⏱️ Claude 调用超时", file=sys.stderr)
-            return None
+            self.reporter.update("Claude 响应超时，继续等待...")
+            # 永不超时，继续等待
+            return self.call_claude(prompt, timeout=None)
         except Exception as e:
-            print(f"❌ 调用失败: {e}", file=sys.stderr)
+            self.reporter.stop()
+            print(f"  ⚠️ 调用失败: {e}", file=sys.stderr)
             return None
     
-    def develop(self, requirement: str) -> dict:
-        """自动化开发一个需求"""
-        print(f"\n🤖 开始自驱开发: {requirement}")
-        mode = "🤖 Claude" if self.use_claude else "⚡ 智能生成"
-        print(f"   模式: {mode}")
-        
-        # Step 1: 需求分析
-        print("📋 步骤1: 分析需求...")
-        
-        # 尝试用 Claude，失败则用本地
-        analysis_raw = self.call(f"""
-分析以下需求，返回 JSON 格式:
-{{
-    "features": ["功能1", "功能2"],
-    "tech_stack": ["Python", "FastAPI"],
-    "complexity": "simple|medium|complex"
-}}
-
+    def analyze_requirement(self, requirement: str) -> dict:
+        """分析需求"""
+        prompt = f"""分析以下需求，返回 JSON:
+{{"features": ["功能1"], "tech_stack": ["Python"], "complexity": "simple"}}
 需求: {requirement}
-""")
+只返回 JSON。"""
         
-        if analysis_raw:
-            analysis = self._parse_json(analysis_raw)
-        else:
-            analysis = self._local_analyze(requirement)
+        result = self.call_claude(prompt, timeout=60)
+        if result:
+            try:
+                if '```json' in result:
+                    result = result.split('```json')[1].split('```')[0]
+                return json.loads(result.strip())
+            except:
+                pass
         
-        print(f"  → 技术栈: {analysis.get('tech_stack', [])}")
-        print(f"  → 功能点: {analysis.get('features', [])}")
-        
-        # Step 2: 代码实现
-        print("💻 步骤2: 实现代码...")
-        
-        code_raw = self.call(f"""
-根据以下需求实现代码:
+        return {"features": ["基础功能"], "tech_stack": ["Python"], "complexity": "simple"}
+    
+    def generate_spec(self, requirement: str, analysis: dict) -> str:
+        """生成需求文档"""
+        prompt = f"""根据以下需求生成需求规格文档 (Requirements Specification):
+
 需求: {requirement}
 技术栈: {analysis.get('tech_stack', [])}
 功能点: {analysis.get('features', [])}
 
-返回 JSON:
-{{
-    "files": [{{"path": "文件名", "content": "代码"}}]
-}}
-""")
+请生成详细的 Markdown 格式需求文档，包含:
+1. 项目概述
+2. 功能需求列表
+3. 用户故事
+4. 非功能需求 (性能、安全等)
+
+返回格式: Markdown"""
         
-        if code_raw:
-            files = self._parse_json(code_raw, key='files')
+        result = self.call_claude(prompt, timeout=120)
+        return result or "需求文档生成失败"
+    
+    def generate_design(self, requirement: str, analysis: dict, spec: str) -> str:
+        """生成技术方案"""
+        prompt = f"""根据以下需求文档生成技术设计方案 (Technical Design):
+
+需求: {requirement}
+技术栈: {analysis.get('tech_stack', [])}
+功能点: {analysis.get('features', [])}
+
+需求文档:
+{spec[:2000]}
+
+请生成详细的 Markdown 格式技术方案，包含:
+1. 系统架构
+2. 模块设计
+3. 数据结构
+4. API 设计 (如有)
+5. 技术选型理由
+
+返回格式: Markdown"""
+        
+        result = self.call_claude(prompt, timeout=120)
+        return result or "技术方案生成失败"
+    
+    def generate_code(self, requirement: str, analysis: dict) -> list:
+        """使用 Claude 生成完整代码"""
+        
+        if 'chrome' in requirement.lower() or '插件' in requirement:
+            prompt = f"""你是Chrome插件工程师。需求: {requirement}
+返回JSON: {{"files": [{{"path": "manifest.json", "content": "..."}}]}}"""
+        
+        elif 'react' in requirement.lower() or 'vue' in requirement:
+            prompt = f"""你是前端工程师。需求: {requirement}
+返回JSON: {{"files": [{{"path": "package.json", "content": "..."}}]}}"""
+        
         else:
-            files = self._local_generate(analysis)
+            prompt = f"""你是Python工程师。需求: {requirement}
+返回JSON: {{"files": [{{"path": "main.py", "content": "..."}}]}}"""
         
-        # 保存文件
-        files_created = []
-        for f in files:
-            path = self.project_path / f['path']
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f['content'])
-            files_created.append(f['path'])
-            print(f"  ✅ {f['path']}")
+        result = self.call_claude(prompt, timeout=180)
         
-        # Step 3: 语法检查
-        print("🔍 步骤3: 质量检查...")
-        review = self._review(files_created)
+        if result:
+            try:
+                if '```json' in result:
+                    result = result.split('```json')[1].split('```')[0]
+                data = json.loads(result.strip())
+                return data.get('files', [])
+            except:
+                pass
         
-        if not review.get('passed', True):
-            print("  ⚠️ 发现问题，尝试修复...")
-            review = self._fix_and_review(files_created, review)
-        
-        print("\n✅ 开发完成!")
-        
-        return {
-            'requirement': requirement,
-            'analysis': analysis,
-            'files': files_created,
-            'review': review,
-            'mode': mode
-        }
+        return []
     
-    def _local_analyze(self, requirement: str) -> dict:
-        """本地需求分析"""
-        features = []
-        tech_stack = []
-        
-        # 关键词匹配
-        keywords = {
-            '用户': ['用户管理', '注册', '登录'],
-            'API': ['REST API', '接口'],
-            '数据库': ['CRUD', '存储'],
-            '前端': ['React', 'Vue', '页面'],
-            '博客': ['文章', 'Markdown'],
-        }
-        
-        for kw, feats in keywords.items():
-            if kw in requirement:
-                features.extend(feats)
-        
-        if 'Python' in requirement or 'python' in requirement:
-            tech_stack = ['Python', 'FastAPI']
-        elif '前端' in requirement or 'web' in requirement:
-            tech_stack = ['React', 'TypeScript']
-        else:
-            tech_stack = ['Python', 'FastAPI']
-        
-        return {
-            'requirement': requirement,
-            'features': features[:5] or ['基础功能'],
-            'tech_stack': tech_stack,
-            'complexity': 'medium' if len(features) > 3 else 'simple'
-        }
-    
-    def _local_generate(self, analysis: dict) -> list:
-        """本地代码生成"""
-        features = analysis.get('features', [])
-        tech_stack = analysis.get('tech_stack', [])
-        files = []
-        
-        if 'Python' in tech_stack and 'FastAPI' in tech_stack:
-            # FastAPI 项目
-            main_content = '''"""FastAPI 应用入口"""
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-app = FastAPI(title="API Server", version="1.0.0")
-
-# CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 数据模型
-'''
-            
-            if any(f in features for f in ['用户管理', '注册', '登录']):
-                main_content += '''
-class User(BaseModel):
-    id: int | None = None
-    username: str
-    password: str
-
-users_db = {}
-
-# 用户认证
-@app.post("/auth/register")
-async def register(user: User):
-    if user.username in users_db:
-        return {"error": "用户已存在"}
-    user_id = len(users_db) + 1
-    users_db[user.username] = {"id": user_id, "username": user.username, "password": user.password}
-    return {"id": user_id, "username": user.username}
-
-@app.post("/auth/login")
-async def login(user: User):
-    db_user = users_db.get(user.username)
-    if not db_user or db_user["password"] != user.password:
-        return {"error": "用户名或密码错误"}
-    return {"token": f"mock_token_{db_user['id']}", "user": db_user}
-
-@app.get("/users")
-async def get_users():
-    return list(users_db.values())
-'''
-            
-            if any(f in features for f in ['文章', '博客']):
-                main_content += '''
-class Article(BaseModel):
-    id: int | None = None
-    title: str
-    content: str
-
-articles_db = {}
-
-@app.post("/articles")
-async def create_article(article: Article):
-    article_id = len(articles_db) + 1
-    articles_db[article_id] = {"id": article_id, **article.dict()}
-    return articles_db[article_id]
-
-@app.get("/articles")
-async def get_articles():
-    return list(articles_db.values())
-
-@app.get("/articles/{article_id}")
-async def get_article(article_id: int):
-    return articles_db.get(article_id, {"error": "文章不存在"})
-'''
-            
-            if not any(f in features for f in ['用户管理', '注册', '登录', '文章', '博客']):
-                main_content += '''
-@app.get("/")
-async def root():
-    return {"message": "Hello, World!"}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-'''
-            
-            main_content += '''
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-'''
-            
-            files.append({'path': 'main.py', 'content': main_content})
-            files.append({'path': 'requirements.txt', 'content': 'fastapi>=0.100.0\nuvicorn>=0.23.0\npydantic>=2.0.0\n'})
-            
-        else:
-            # 通用 Python
-            content = f'''"""Generated Application"""
-# Features: {", ".join(features)}
-
-def main():
-    print("Hello, World!")
-
-if __name__ == "__main__":
-    main()
-'''
-            files.append({'path': 'app.py', 'content': content})
-        
-        return files
-    
-    def _parse_json(self, text: str, key: str = None) -> dict:
-        """解析 JSON 响应"""
-        if not text:
-            return {}
-        
-        # 提取 JSON 块
-        if '```json' in text:
-            text = text.split('```json')[1].split('```')[0]
-        elif '```' in text:
-            text = text.split('```')[1].split('```')[0]
-        
-        try:
-            data = json.loads(text.strip())
-            if key:
-                return data.get(key, [])
-            return data
-        except json.JSONDecodeError:
-            import re
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except:
-                    pass
-            return {}
-    
-    def _review(self, files: list) -> dict:
-        """质量审查"""
+    def review_code(self, files: list) -> dict:
+        """审查代码"""
         issues = []
         
         for f in files:
-            path = self.project_path / f
+            path = self.project_path / f['path']
             if not path.exists():
+                issues.append(f"文件未创建: {f['path']}")
                 continue
             
             content = path.read_text()
+            if len(content) < 50:
+                issues.append(f"{f['path']}: 内容太少")
             
-            # 基础检查
-            if len(content) > 5000:
-                issues.append(f"{f}: 文件过大 ({len(content)} chars)")
-            
-            if 'password' in content.lower() and '=' in content:
-                if 'password=' in content.lower():
-                    issues.append(f"{f}: 包含明文密码")
-            
-            # Python 语法检查
-            if f.endswith('.py'):
+            if f['path'].endswith('.py'):
                 try:
-                    compile(content, f, 'exec')
+                    compile(content, f['path'], 'exec')
                 except SyntaxError as e:
-                    issues.append(f"{f}: 语法错误 - {e}")
+                    issues.append(f"{f['path']}: 语法错误")
+            
+            if f['path'].endswith('.json'):
+                try:
+                    json.loads(content)
+                except:
+                    issues.append(f"{f['path']}: JSON错误")
         
-        score = max(0, 10 - len(issues))
-        
+        return {'score': max(0, 10 - len(issues)), 'issues': issues, 'passed': len(issues) == 0}
+    
+    def develop(self, requirement: str) -> dict:
+        """自动化开发"""
+        self.log(f"\n🤖 开始自驱开发: {requirement}")
+        self.log(f"   模式: ⚡ Claude Code CLI")
+        self.log(f"   Claude: {self.claude_bin}")
+        self.log(f"   目标: {self.project_path}")
+
+        # Step 1: 需求分析
+        self.log("\n📋 步骤1: 需求分析...")
+        self.reporter.start("分析需求中...")
+        analysis = self.analyze_requirement(requirement)
+        self.reporter.stop()
+        self.log(f"  → 技术栈: {analysis.get('tech_stack', [])}")
+        self.log(f"  → 功能点: {analysis.get('features', [])}")
+
+        # Step 2: 需求文档
+        self.log("\n📝 步骤2: 生成需求文档...")
+        self.reporter.start("生成需求文档...")
+        spec = self.generate_spec(requirement, analysis)
+        self.reporter.stop()
+        spec_path = self.project_path / 'SPEC.md'
+        spec_path.write_text(spec)
+        self.log(f"  ✅ SPEC.md ({len(spec)} chars)")
+
+        # Step 3: 技术方案
+        self.log("\n🏗️ 步骤3: 生成技术方案...")
+        self.reporter.start("生成技术方案...")
+        design = self.generate_design(requirement, analysis, spec)
+        self.reporter.stop()
+        design_path = self.project_path / 'DESIGN.md'
+        design_path.write_text(design)
+        self.log(f"  ✅ DESIGN.md ({len(design)} chars)")
+
+        # Step 4: 代码生成
+        self.log("\n💻 步骤4: 生成代码...")
+        self.reporter.start("生成代码中...")
+        files = self.generate_code(requirement, analysis)
+        self.reporter.stop()
+
+        if not files:
+            self.log("  ❌ 代码生成失败", "ERROR")
+            return {'success': False}
+
+        # 编辑每个文件时都报告进度
+        total = len(files)
+        for idx, f in enumerate(files):
+            self.reporter.start(f"写入文件中 ({idx+1}/{total}): {f['path']}")
+            path = self.project_path / f['path']
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f['content'])
+            self.reporter.stop()
+            self.log(f"  ✅ {f['path']} ({len(f['content'])} bytes)")
+
+        # Step 5: 质量检查
+        self.log("\n🔍 步骤5: 质量检查...")
+        review = self.review_code(files)
+
+        if review['passed']:
+            self.log(f"  ✅ 通过 (score: {review['score']}/10)")
+        else:
+            self.log(f"  ⚠️ {len(review['issues'])} 个问题")
+
+        self.log("\n✅ 开发完成!")
+        self.logger.info("=" * 50)
+        self.logger.info("开发完成!")
         return {
-            'score': score,
-            'issues': issues,
-            'passed': len(issues) == 0
+            'success': True,
+            'files': [f['path'] for f in files],
+            'docs': ['SPEC.md', 'DESIGN.md']
         }
-    
-    def _fix_and_review(self, files: list, review: dict) -> dict:
-        """修复问题"""
-        issues = review.get('issues', [])
-        
-        for issue in issues:
-            # 简单修复
-            if '语法错误' in issue:
-                # 提取文件名
-                f = issue.split(':')[0]
-                path = self.project_path / f
-                if path.exists():
-                    content = path.read_text()
-                    # 尝试修复常见语法错误
-                    content = content.replace('\t', '    ')
-                    path.write_text(content)
-                    print(f"  🔧 已修复: {f}")
-        
-        return self._review(files)
-    
-    def interactive(self):
-        """交互模式"""
-        print("\n🤖 Claude Dev Assistant - 交互模式")
-        print("输入需求开始开发，输入 'quit' 退出\n")
-        
-        while True:
-            try:
-                req = input("需求> ").strip()
-                
-                if not req:
-                    continue
-                if req.lower() in ['quit', 'exit', 'q']:
-                    print("👋 再见!")
-                    break
-                
-                self.develop(req)
-                print()
-                
-            except KeyboardInterrupt:
-                print("\n👋 再见!")
-                break
 
 
 def main():
-    """CLI 入口"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Claude Dev Assistant - 自驱开发')
-    parser.add_argument('command', nargs='?', help='命令: develop, interactive')
+    parser = argparse.ArgumentParser(description='Claude Dev Assistant')
+    parser.add_argument('command', nargs='?', help='命令')
     parser.add_argument('args', nargs='*', help='参数')
     parser.add_argument('--path', '-p', type=str, help='项目路径')
+    parser.add_argument('--claude', '-c', type=str, help='Claude CLI 路径')
     
     args = parser.parse_args()
     
     project_path = Path(args.path) if args.path else None
-    driver = ClaudeDriver(project_path)
+    claude_bin = Path(args.claude) if args.claude else None
+    
+    driver = ClaudeDriver(project_path, claude_bin)
     
     if args.command == 'develop' and args.args:
         requirement = ' '.join(args.args)
         driver.develop(requirement)
-    
-    elif args.command == 'interactive' or not args.command:
-        driver.interactive()
-    
     else:
-        parser.print_help()
+        print("用法:")
+        print("  python3 driver.py develop <需求> --path <目录> --claude <claude路径>")
 
 
 if __name__ == '__main__':
