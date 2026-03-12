@@ -311,42 +311,14 @@ class ClaudeDriver:
                 for f in self.project_path.rglob('*')
                 if f.is_file() and not f.name.startswith('.')]
 
-    def full_task_prompt(self, requirement: str, existing_files: list) -> str:
-        """构建全流程任务 prompt - 让 Claude 自己决定如何完成"""
-        files_list = "\n".join(f"- {f}" for f in existing_files) if existing_files else "（无）"
-
-        return f"""你是一个专业的软件工程师。请根据以下需求完成全流程开发。
-
-## 需求
-{requirement}
-
-## 已有文件
-{files_list}
-
-## 开发流程（请按顺序执行）
-1. 首先阅读并分析所有已有文件的代码，理解现有架构
-2. 生成需求规格文档 (SPEC.md)
-3. 生成技术设计方案 (DESIGN.md)
-4. 实现代码（只返回需要新增或修改的文件）
-5. 检查代码质量，确保语法正确
-
-## 重要要求
-- 必须先读取并分析已有文件后再进行开发
-- 增量开发，不要重复创建已存在的文件
-- 如果需要修改已有文件，请在返回的 files 中包含该文件
-- 代码完成后进行自检，确保没有语法错误
-
-请开始开发，返回格式:
-{{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
-
     def develop(self, requirement: str) -> dict:
-        """自动化开发 - 全流程由 Claude 主导"""
+        """自动化开发 - 每个阶段都是 Claude 干活"""
         self.log(f"\n🤖 开始自驱开发: {requirement}")
         self.log(f"   模式: ⚡ Claude Code CLI")
         self.log(f"   Claude: {self.claude_bin}")
         self.log(f"   目标: {self.project_path}")
 
-        # 列出已有文件
+        # ========== 阶段 0: 扫描已有文件 ==========
         existing_files = self.list_existing_files()
         if existing_files:
             self.log(f"\n📂 已有 {len(existing_files)} 个文件:")
@@ -355,17 +327,161 @@ class ClaudeDriver:
             if len(existing_files) > 10:
                 self.log(f"   ... 还有 {len(existing_files) - 10} 个")
 
-        # 全流程任务 - 让 Claude 主导一切
-        self.log("\n🚀 开始全流程开发...")
-        self.reporter.start("Claude 主导开发中...")
+        # ========== 阶段 1: 需求调研 + WebSearch (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("📋 阶段 1: 需求调研 + WebSearch")
+        self.log("="*50)
+        self.reporter.start("Claude 调研需求 + 搜索优秀方案中...")
 
-        # 第一次调用 - 完整开发
-        prompt = self.full_task_prompt(requirement, existing_files)
-        result = self.call_claude(prompt)
+        # 先搜索相关优秀方案
+        search_keywords = requirement[:50] + " best practices implementation"
+        self.log(f"  🔍 WebSearch: {search_keywords[:30]}...")
 
-        if not result:
-            self.log("  ❌ Claude 调用失败", "ERROR")
-            return {'success': False}
+        # 使用 MCP 工具搜索
+        try:
+            from mcp__MiniMax__web_search import mcp__MiniMax__web_search
+            search_results = mcp__MiniMax__web_search(query=search_keywords)
+            search_info = ""
+            if search_results and search_results.get('organic'):
+                for item in search_results['organic'][:3]:
+                    search_info += f"- {item.get('title', '')}: {item.get('snippet', '')[:100]}...\n"
+                self.log(f"  → 找到 {len(search_results.get('organic', []))} 个相关结果")
+        except:
+            search_info = ""
+            self.log("  ⚠️ WebSearch 不可用，跳过")
+
+        research_prompt = f"""你是软件工程师。请根据以下需求进行调研。
+
+需求: {requirement}
+
+已有文件:
+{chr(10).join(f"- {f}" for f in existing_files) if existing_files else "（无）"}
+
+WebSearch 参考结果:
+{search_info if search_info else "（无可用搜索结果）"}
+
+请调研:
+1. 分析已有文件的代码，理解现有架构
+2. 参考 WebSearch 结果，调研类似项目的最佳实现方式
+3. 确定技术选型
+
+返回 JSON:
+{{"research": "调研结论", "tech_stack": ["技术1", "技术2"], "existing_analysis": "已有代码分析", "references": ["参考1", "参考2"]}}"""
+
+        research_result = self.call_claude(research_prompt)
+        self.reporter.stop()
+
+        research_data = {}
+        if research_result:
+            try:
+                if '```json' in research_result:
+                    research_result = research_result.split('```json')[1].split('```')[0]
+                research_data = json.loads(research_result.strip())
+                self.log(f"  → 技术栈: {research_data.get('tech_stack', [])}")
+                self.log(f"  → 调研结论: {research_data.get('research', '')[:100]}...")
+                refs = research_data.get('references', [])
+                if refs:
+                    self.log(f"  → 参考: {refs[:3]}")
+            except:
+                pass
+
+        # ========== 阶段 2: 需求分析 (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("📝 阶段 2: 需求分析")
+        self.log("="*50)
+        self.reporter.start("Claude 分析需求中...")
+
+        analysis_prompt = f"""你是软件工程师。请分析以下需求。
+
+需求: {requirement}
+
+请生成:
+1. 功能需求列表
+2. 用户故事
+3. 验收标准
+4. 复杂度评估
+
+返回 JSON:
+{{"features": ["功能1", "功能2"], "user_stories": ["故事1"], "acceptance_criteria": ["标准1"], "complexity": "simple/medium/complex"}}"""
+
+        analysis_result = self.call_claude(analysis_prompt)
+        self.reporter.stop()
+
+        analysis_data = {}
+        if analysis_result:
+            try:
+                if '```json' in analysis_result:
+                    analysis_result = analysis_result.split('```json')[1].split('```')[0]
+                analysis_data = json.loads(analysis_result.strip())
+                self.log(f"  → 功能点: {analysis_data.get('features', [])}")
+                self.log(f"  → 复杂度: {analysis_data.get('complexity', 'unknown')}")
+            except:
+                pass
+
+        # ========== 阶段 3: 技术方案 (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("🏗️ 阶段 3: 技术方案设计")
+        self.log("="*50)
+        self.reporter.start("Claude 设计技术方案中...")
+
+        design_prompt = f"""你是软件架构师。请根据以下需求设计技术方案。
+
+需求: {requirement}
+功能点: {analysis_data.get('features', [])}
+技术栈: {research_data.get('tech_stack', []) if research_data else []}
+已有文件: {existing_files}
+
+请生成:
+1. 系统架构
+2. 模块设计
+3. 数据结构
+4. API 设计 (如有)
+
+返回 JSON:
+{{"architecture": "架构描述", "modules": ["模块1", "模块2"], "files": [{{"path": "文件", "content": "代码"}}]}}"""
+
+        design_result = self.call_claude(design_prompt)
+        self.reporter.stop()
+
+        design_data = {}
+        if design_result:
+            try:
+                if '```json' in design_result:
+                    design_result = design_result.split('```json')[1].split('```')[0]
+                design_data = json.loads(design_result.strip())
+                self.log(f"  → 架构: {design_data.get('architecture', '')[:80]}...")
+                self.log(f"  → 模块: {design_data.get('modules', [])}")
+            except:
+                pass
+
+        # 保存设计文档
+        if design_data.get('architecture'):
+            design_path = self.project_path / 'DESIGN.md'
+            design_path.write_text(f"# 技术方案\n\n{design_data.get('architecture', '')}")
+            self.log(f"  ✅ DESIGN.md")
+
+        # ========== 阶段 4: 代码实现 (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("💻 阶段 4: 代码实现")
+        self.log("="*50)
+        self.reporter.start("Claude 编写代码中...")
+
+        code_prompt = f"""你是软件工程师。请根据以下需求和方案实现代码。
+
+需求: {requirement}
+技术方案: {design_data.get('architecture', '') if design_data else ''}
+功能点: {analysis_data.get('features', []) if analysis_data else []}
+已有文件: {existing_files}
+
+重要:
+1. 必须先读取分析已有文件代码
+2. 增量开发，只返回需要新增或修改的文件
+3. 如果修改已有文件，请包含完整内容
+
+返回 JSON:
+{{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
+
+        result = self.call_claude(code_prompt)
 
         # 解析结果
         files = []
@@ -398,15 +514,95 @@ class ClaudeDriver:
             self.reporter.stop()
             self.log(f"  ✅ {f['path']} ({len(f['content'])} bytes)")
 
-        # 循环 Review - 定期回顾改进
-        self.log("\n🔄 开始代码审查循环...")
+        # ========== 阶段 5: 测试用例 (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("🧪 阶段 5: 生成测试用例")
+        self.log("="*50)
+        self.reporter.start("Claude 生成测试用例中...")
+
+        test_prompt = f"""你是测试工程师。请为以下代码生成测试用例。
+
+需求: {requirement}
+功能点: {analysis_data.get('features', []) if analysis_data else []}
+代码文件:
+{chr(10).join(f"- {f['path']}" for f in files)}
+
+请生成:
+1. 单元测试
+2. 集成测试用例
+3. 测试覆盖点
+
+返回 JSON:
+{{"test_files": [{{"path": "测试文件路径", "content": "测试代码"}}]}}"""
+
+        test_result = self.call_claude(test_prompt)
+        self.reporter.stop()
+
+        test_files = []
+        if test_result:
+            try:
+                if '```json' in test_result:
+                    test_result = test_result.split('```json')[1].split('```')[0]
+                test_data = json.loads(test_result.strip())
+                test_files = test_data.get('test_files', [])
+                for tf in test_files:
+                    path = self.project_path / tf['path']
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(tf['content'])
+                    self.log(f"  ✅ {tf['path']} ({len(tf['content'])} bytes)")
+            except:
+                pass
+
+        # ========== 阶段 6: 测试回归 (Claude 干活) ==========
+        self.log("\n" + "="*50)
+        self.log("🔁 阶段 6: 测试回归验证")
+        self.log("="*50)
+        self.reporter.start("Claude 运行测试回归中...")
+
+        regression_prompt = f"""你是测试工程师。请运行测试并验证代码。
+
+已生成的代码文件:
+{chr(10).join(f"- {f['path']}" for f in files)}
+
+测试文件:
+{chr(10).join(f"- {tf['path']}" for tf in test_files) if test_files else "（无）"}
+
+请:
+1. 运行测试用例
+2. 检查测试是否通过
+3. 如有问题，返回需要修复的文件
+
+返回 JSON:
+{{"passed": true/false, "test_results": ["测试结果"], "fix_needed": true/false, "fix_files": [{{"path": "文件", "content": "修复代码"}}]}}"""
+
+        regression_result = self.call_claude(regression_prompt)
+        self.reporter.stop()
+
+        if regression_result:
+            try:
+                if '```json' in regression_result:
+                    regression_result = regression_result.split('```json')[1].split('```')[0]
+                regression_data = json.loads(regression_result.strip())
+                passed = regression_data.get('passed', False)
+                if passed:
+                    self.log("  ✅ 测试回归通过!")
+                else:
+                    self.log(f"  ⚠️ 测试有问题: {regression_data.get('test_results', [])}")
+            except:
+                pass
+
+        # ========== 阶段 7: 代码审查 (Claude 干活) - 循环 ==========
+        self.log("\n" + "="*50)
+        self.log("🔍 阶段 7: 代码审查循环")
+        self.log("="*50)
+
         for cycle in range(1, 6):  # 最多5轮
-            self.log(f"\n🔍 审查循环 {cycle}/5")
-            self.reporter.start(f"审查代码中 ({cycle}/5)...")
+            self.log(f"\n🔄 审查循环 {cycle}/5")
+            self.reporter.start(f"Claude 审查代码中 ({cycle}/5)...")
 
-            # 让 Claude 审查代码
-            review_prompt = f"""请审查以下已生成的代码，找出问题和改进点。
+            review_prompt = f"""你是代码审查专家。请审查以下代码。
 
+需求: {requirement}
 已生成的文件:
 {chr(10).join(f"- {f['path']}" for f in files)}
 
@@ -414,10 +610,11 @@ class ClaudeDriver:
 1. 语法错误
 2. 逻辑问题
 3. 安全性问题
-4. 是否符合需求
+4. 代码规范
+5. 是否符合需求
 
-返回格式:
-{{"issues": ["问题1", "问题2"], "fixed": true/false, "improved_files": [{{"path": "文件", "content": "改进后的代码"}}]}}"""
+返回 JSON:
+{{"issues": ["问题1", "问题2"], "passed": true/false, "improved_files": [{{"path": "文件", "content": "改进代码"}}]}}"""
 
             review_result = self.call_claude(review_prompt)
             self.reporter.stop()
@@ -425,7 +622,6 @@ class ClaudeDriver:
             if not review_result:
                 break
 
-            # 解析审查结果
             try:
                 if '```json' in review_result:
                     review_result = review_result.split('```json')[1].split('```')[0]
@@ -435,10 +631,18 @@ class ClaudeDriver:
 
             issues = review_data.get('issues', [])
             improved = review_data.get('improved_files', [])
+            passed = review_data.get('passed', False)
 
-            if not issues or not improved:
+            if passed or not issues:
                 self.log("  ✅ 代码审查通过!")
                 break
+
+            self.log(f"  ⚠️ 发现 {len(issues)} 个问题，Claude 正在改进...")
+            for f in improved:
+                path = self.project_path / f['path']
+                path.write_text(f['content'])
+                self.log(f"  ✅ 改进: {f['path']}")
+                files = [fi for fi in files if fi['path'] != f['path']] + [f]
 
             # 应用改进
             self.log(f"  ⚠️ 发现 {len(issues)} 个问题，改进中...")
