@@ -13,9 +13,9 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
-# 默认路径
-DEFAULT_CLAUDE_BIN = Path('/home/node/.openclaw/workspace/tools/bin/claude')
-PROJECT_ROOT = Path('/home/node/.openclaw/workspace/clawtest')
+# 默认路径 - 使用当前文件所在目录作为项目根目录
+DEFAULT_CLAUDE_BIN = Path('/usr/local/bin/claude')
+PROJECT_ROOT = Path(__file__).parent.resolve()
 LOG_DIR = PROJECT_ROOT / '.claude' / 'logs'
 
 
