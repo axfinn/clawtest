@@ -127,7 +127,22 @@ class ClaudeDriver:
                 return None
 
         return None
-    
+
+    def parse_json_response(self, response: str, default: dict = None) -> dict:
+        """解析 JSON 响应 - 带详细错误处理"""
+        if not response:
+            return default or {}
+        try:
+            # 尝试提取 JSON 块
+            if '```json' in response:
+                response = response.split('```json')[1].split('```')[0]
+            return json.loads(response.strip())
+        except json.JSONDecodeError as e:
+            self.log(f"  ⚠️ JSON 解析错误: {e}", "WARNING")
+        except Exception as e:
+            self.log(f"  ⚠️ 解析响应失败: {e}", "WARNING")
+        return default or {}
+
     def analyze_requirement(self, requirement: str) -> dict:
         """分析需求"""
         prompt = f"""分析以下需求，返回 JSON:
@@ -137,13 +152,8 @@ class ClaudeDriver:
         
         result = self.call_claude(prompt, timeout=60)
         if result:
-            try:
-                if '```json' in result:
-                    result = result.split('```json')[1].split('```')[0]
-                return json.loads(result.strip())
-            except:
-                pass
-        
+            return self.parse_json_response(result, {"features": ["基础功能"], "tech_stack": ["Python"], "complexity": "simple"})
+
         return {"features": ["基础功能"], "tech_stack": ["Python"], "complexity": "simple"}
     
     def generate_spec(self, requirement: str, analysis: dict) -> str:
@@ -218,14 +228,9 @@ class ClaudeDriver:
         result = self.call_claude(prompt, timeout=None)
         
         if result:
-            try:
-                if '```json' in result:
-                    result = result.split('```json')[1].split('```')[0]
-                data = json.loads(result.strip())
-                return data.get('files', [])
-            except:
-                pass
-        
+            data = self.parse_json_response(result)
+            return data.get('files', [])
+
         return []
     
     def review_code(self, files: list) -> dict:
@@ -251,7 +256,7 @@ class ClaudeDriver:
             if f['path'].endswith('.json'):
                 try:
                     json.loads(content)
-                except:
+                except json.JSONDecodeError:
                     issues.append(f"{f['path']}: JSON错误")
         
         return {'score': max(0, 10 - len(issues)), 'issues': issues, 'passed': len(issues) == 0}
@@ -337,17 +342,13 @@ WebSearch 参考结果:
 
         research_data = {}
         if research_result:
-            try:
-                if '```json' in research_result:
-                    research_result = research_result.split('```json')[1].split('```')[0]
-                research_data = json.loads(research_result.strip())
+            research_data = self.parse_json_response(research_result)
+            if research_data:
                 self.log(f"  → 技术栈: {research_data.get('tech_stack', [])}")
                 self.log(f"  → 调研结论: {research_data.get('research', '')[:100]}...")
                 refs = research_data.get('references', [])
                 if refs:
                     self.log(f"  → 参考: {refs[:3]}")
-            except:
-                pass
 
         # ========== 阶段 2: 需求分析 (Claude 干活) ==========
         self.log("\n" + "="*50)
@@ -373,10 +374,8 @@ WebSearch 参考结果:
 
         analysis_data = {}
         if analysis_result:
-            try:
-                if '```json' in analysis_result:
-                    analysis_result = analysis_result.split('```json')[1].split('```')[0]
-                analysis_data = json.loads(analysis_result.strip())
+            analysis_data = self.parse_json_response(analysis_result)
+            if analysis_data:
                 self.log(f"  → 功能点: {analysis_data.get('features', [])}")
                 self.log(f"  → 复杂度: {analysis_data.get('complexity', 'unknown')}")
 
@@ -391,8 +390,6 @@ WebSearch 参考结果:
                 requirements_path = docs_dir / '01-REQUIREMENTS.md'
                 requirements_path.write_text(spec_content)
                 self.log(f"  ✅ docs/01-REQUIREMENTS.md")
-            except:
-                pass
 
         # ========== 阶段 3: 技术方案 (Claude 干活) ==========
         self.log("\n" + "="*50)
@@ -421,14 +418,10 @@ WebSearch 参考结果:
 
         design_data = {}
         if design_result:
-            try:
-                if '```json' in design_result:
-                    design_result = design_result.split('```json')[1].split('```')[0]
-                design_data = json.loads(design_result.strip())
+            design_data = self.parse_json_response(design_result)
+            if design_data:
                 self.log(f"  → 架构: {design_data.get('architecture', '')[:80]}...")
                 self.log(f"  → 模块: {design_data.get('modules', [])}")
-            except:
-                pass
 
         # 调用 Claude 生成详细的技术方案文档
         self.reporter.start("Claude 生成技术方案文档...")
@@ -474,12 +467,10 @@ WebSearch 参考结果:
         # 解析结果
         files = []
         try:
-            if '```json' in result:
-                result = result.split('```json')[1].split('```')[0]
-            data = json.loads(result.strip())
+            data = self.parse_json_response(result)
             files = data.get('files', [])
-        except:
-            self.log("  ⚠️ 解析失败，尝试其他方式", "WARNING")
+        except Exception as e:
+            self.log(f"  ⚠️ 解析失败: {e}，尝试其他方式", "WARNING")
             # 尝试提取文件（re 已在文件顶部导入）
             file_matches = re.findall(r'"path"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"', result, re.DOTALL)
             for path, content in file_matches:
@@ -528,10 +519,8 @@ WebSearch 参考结果:
         test_files = []
         test_plan_content = ""
         if test_result:
-            try:
-                if '```json' in test_result:
-                    test_result = test_result.split('```json')[1].split('```')[0]
-                test_data = json.loads(test_result.strip())
+            test_data = self.parse_json_response(test_result)
+            if test_data:
                 test_files = test_data.get('test_files', [])
 
                 # 生成测试计划文档内容
@@ -563,8 +552,6 @@ WebSearch 参考结果:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(tf['content'])
                     self.log(f"  ✅ {tf['path']} ({len(tf['content'])} bytes)")
-            except:
-                pass
 
         # ========== 阶段 6: 测试回归 (Claude 干活) ==========
         self.log("\n" + "="*50)
@@ -592,17 +579,13 @@ WebSearch 参考结果:
         self.reporter.stop()
 
         if regression_result:
-            try:
-                if '```json' in regression_result:
-                    regression_result = regression_result.split('```json')[1].split('```')[0]
-                regression_data = json.loads(regression_result.strip())
+            regression_data = self.parse_json_response(regression_result)
+            if regression_data:
                 passed = regression_data.get('passed', False)
                 if passed:
                     self.log("  ✅ 测试回归通过!")
                 else:
                     self.log(f"  ⚠️ 测试有问题: {regression_data.get('test_results', [])}")
-            except:
-                pass
 
         # ========== 阶段 7: 代码审查 (Claude 干活) - 循环 ==========
         self.log("\n" + "="*50)
@@ -635,11 +618,8 @@ WebSearch 参考结果:
             if not review_result:
                 break
 
-            try:
-                if '```json' in review_result:
-                    review_result = review_result.split('```json')[1].split('```')[0]
-                review_data = json.loads(review_result.strip())
-            except:
+            review_data = self.parse_json_response(review_result)
+            if not review_data:
                 break
 
             issues = review_data.get('issues', [])
