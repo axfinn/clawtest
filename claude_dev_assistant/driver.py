@@ -235,22 +235,34 @@ class ClaudeDriver:
         result = self.call_claude(prompt, timeout=120)
         return result or "技术方案生成失败"
     
-    def generate_code(self, requirement: str, analysis: dict) -> list:
+    def generate_code(self, requirement: str, analysis: dict, existing_files: list = None) -> list:
         """使用 Claude 生成完整代码"""
-        
+
+        # 构建已有文件信息（让 Claude 自己分析）
+        existing_info = ""
+        if existing_files:
+            existing_info = "\n\n已有文件列表:\n" + "\n".join(f"- {f}" for f in existing_files)
+            existing_info += "\n请先读取并分析这些已有文件的代码，然后进行增量开发。"
+
         if 'chrome' in requirement.lower() or '插件' in requirement:
             prompt = f"""你是Chrome插件工程师。需求: {requirement}
-返回JSON: {{"files": [{{"path": "manifest.json", "content": "..."}}]}}"""
-        
+{existing_info}
+只返回需要新增或修改的文件。
+返回JSON: {{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
+
         elif 'react' in requirement.lower() or 'vue' in requirement:
             prompt = f"""你是前端工程师。需求: {requirement}
-返回JSON: {{"files": [{{"path": "package.json", "content": "..."}}]}}"""
-        
+{existing_info}
+只返回需要新增或修改的文件。
+返回JSON: {{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
+
         else:
             prompt = f"""你是Python工程师。需求: {requirement}
-返回JSON: {{"files": [{{"path": "main.py", "content": "..."}}]}}"""
-        
-        result = self.call_claude(prompt, timeout=180)
+{existing_info}
+只返回需要新增或修改的文件。
+返回JSON: {{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
+
+        result = self.call_claude(prompt, timeout=None)
         
         if result:
             try:
@@ -290,18 +302,36 @@ class ClaudeDriver:
                     issues.append(f"{f['path']}: JSON错误")
         
         return {'score': max(0, 10 - len(issues)), 'issues': issues, 'passed': len(issues) == 0}
-    
+
+    def list_existing_files(self) -> list:
+        """列出已有文件（让 Claude 自己分析）"""
+        if not self.project_path.exists():
+            return []
+        return [str(f.relative_to(self.project_path))
+                for f in self.project_path.rglob('*')
+                if f.is_file() and not f.name.startswith('.')]
+
     def develop(self, requirement: str) -> dict:
-        """自动化开发"""
+        """自动化开发 - 只负责日志和流程串接"""
         self.log(f"\n🤖 开始自驱开发: {requirement}")
         self.log(f"   模式: ⚡ Claude Code CLI")
         self.log(f"   Claude: {self.claude_bin}")
         self.log(f"   目标: {self.project_path}")
 
-        # Step 1: 需求分析
+        # 列出已有文件（让 Claude 自己分析）
+        existing_files = self.list_existing_files()
+        if existing_files:
+            self.log(f"\n📂 已有 {len(existing_files)} 个文件:")
+            for f in existing_files[:10]:
+                self.log(f"   - {f}")
+            if len(existing_files) > 10:
+                self.log(f"   ... 还有 {len(existing_files) - 10} 个")
+
+        # Step 1: 需求分析（包含已有内容信息，让 Claude 分析）
         self.log("\n📋 步骤1: 需求分析...")
-        self.reporter.start("分析需求中...")
-        analysis = self.analyze_requirement(requirement)
+        self.reporter.start("分析需求和已有代码...")
+        existing_info = f"\n\n已有文件:\n" + "\n".join(f"- {f}" for f in existing_files) if existing_files else ""
+        analysis = self.analyze_requirement(requirement + existing_info)
         self.reporter.stop()
         self.log(f"  → 技术栈: {analysis.get('tech_stack', [])}")
         self.log(f"  → 功能点: {analysis.get('features', [])}")
@@ -327,14 +357,14 @@ class ClaudeDriver:
         # Step 4: 代码生成
         self.log("\n💻 步骤4: 生成代码...")
         self.reporter.start("生成代码中...")
-        files = self.generate_code(requirement, analysis)
+        files = self.generate_code(requirement, analysis, existing_files)
         self.reporter.stop()
 
         if not files:
             self.log("  ❌ 代码生成失败", "ERROR")
             return {'success': False}
 
-        # 编辑每个文件时都报告进度
+        # 写入文件
         total = len(files)
         for idx, f in enumerate(files):
             self.reporter.start(f"写入文件中 ({idx+1}/{total}): {f['path']}")
