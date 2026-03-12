@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: clawtest:latest
+    container_name: clawtest-web
+    restart: unless-stopped
+    
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-prod}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app.db}
+    
+    ports:
+      - "5000:5000"
+    
+    volumes:
+      - ./logs:/app/logs
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    networks:
+      - clawtest-network
+
+  # Development service (optional)
+  web-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    image: clawtest:dev
+    container_name: clawtest-web-dev
+    restart: "no"
+    
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - SECRET_KEY=dev-secret-key
+      - DATABASE_URL=sqlite:///app.db
+    
+    ports:
+      - "5001:5000"
+    
+    volumes:
+      - ./src:/app/src
+      - ./config.py:/app/config.py
+    
+    command: flask run --host=0.0.0.0 --port=5000
+    
+    networks:
+      - clawtest-network
+
+networks:
+  clawtest-network:
+    driver: bridge
