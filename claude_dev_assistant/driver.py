@@ -311,14 +311,42 @@ class ClaudeDriver:
                 for f in self.project_path.rglob('*')
                 if f.is_file() and not f.name.startswith('.')]
 
+    def full_task_prompt(self, requirement: str, existing_files: list) -> str:
+        """构建全流程任务 prompt - 让 Claude 自己决定如何完成"""
+        files_list = "\n".join(f"- {f}" for f in existing_files) if existing_files else "（无）"
+
+        return f"""你是一个专业的软件工程师。请根据以下需求完成全流程开发。
+
+## 需求
+{requirement}
+
+## 已有文件
+{files_list}
+
+## 开发流程（请按顺序执行）
+1. 首先阅读并分析所有已有文件的代码，理解现有架构
+2. 生成需求规格文档 (SPEC.md)
+3. 生成技术设计方案 (DESIGN.md)
+4. 实现代码（只返回需要新增或修改的文件）
+5. 检查代码质量，确保语法正确
+
+## 重要要求
+- 必须先读取并分析已有文件后再进行开发
+- 增量开发，不要重复创建已存在的文件
+- 如果需要修改已有文件，请在返回的 files 中包含该文件
+- 代码完成后进行自检，确保没有语法错误
+
+请开始开发，返回格式:
+{{"files": [{{"path": "文件名", "content": "代码内容"}}]}}"""
+
     def develop(self, requirement: str) -> dict:
-        """自动化开发 - 只负责日志和流程串接"""
+        """自动化开发 - 全流程由 Claude 主导"""
         self.log(f"\n🤖 开始自驱开发: {requirement}")
         self.log(f"   模式: ⚡ Claude Code CLI")
         self.log(f"   Claude: {self.claude_bin}")
         self.log(f"   目标: {self.project_path}")
 
-        # 列出已有文件（让 Claude 自己分析）
+        # 列出已有文件
         existing_files = self.list_existing_files()
         if existing_files:
             self.log(f"\n📂 已有 {len(existing_files)} 个文件:")
@@ -327,44 +355,40 @@ class ClaudeDriver:
             if len(existing_files) > 10:
                 self.log(f"   ... 还有 {len(existing_files) - 10} 个")
 
-        # Step 1: 需求分析（包含已有内容信息，让 Claude 分析）
-        self.log("\n📋 步骤1: 需求分析...")
-        self.reporter.start("分析需求和已有代码...")
-        existing_info = f"\n\n已有文件:\n" + "\n".join(f"- {f}" for f in existing_files) if existing_files else ""
-        analysis = self.analyze_requirement(requirement + existing_info)
-        self.reporter.stop()
-        self.log(f"  → 技术栈: {analysis.get('tech_stack', [])}")
-        self.log(f"  → 功能点: {analysis.get('features', [])}")
+        # 全流程任务 - 让 Claude 主导一切
+        self.log("\n🚀 开始全流程开发...")
+        self.reporter.start("Claude 主导开发中...")
 
-        # Step 2: 需求文档
-        self.log("\n📝 步骤2: 生成需求文档...")
-        self.reporter.start("生成需求文档...")
-        spec = self.generate_spec(requirement, analysis)
-        self.reporter.stop()
-        spec_path = self.project_path / 'SPEC.md'
-        spec_path.write_text(spec)
-        self.log(f"  ✅ SPEC.md ({len(spec)} chars)")
+        # 第一次调用 - 完整开发
+        prompt = self.full_task_prompt(requirement, existing_files)
+        result = self.call_claude(prompt)
 
-        # Step 3: 技术方案
-        self.log("\n🏗️ 步骤3: 生成技术方案...")
-        self.reporter.start("生成技术方案...")
-        design = self.generate_design(requirement, analysis, spec)
-        self.reporter.stop()
-        design_path = self.project_path / 'DESIGN.md'
-        design_path.write_text(design)
-        self.log(f"  ✅ DESIGN.md ({len(design)} chars)")
+        if not result:
+            self.log("  ❌ Claude 调用失败", "ERROR")
+            return {'success': False}
 
-        # Step 4: 代码生成
-        self.log("\n💻 步骤4: 生成代码...")
-        self.reporter.start("生成代码中...")
-        files = self.generate_code(requirement, analysis, existing_files)
-        self.reporter.stop()
+        # 解析结果
+        files = []
+        try:
+            if '```json' in result:
+                result = result.split('```json')[1].split('```')[0]
+            data = json.loads(result.strip())
+            files = data.get('files', [])
+        except:
+            self.log("  ⚠️ 解析失败，尝试其他方式", "WARNING")
+            # 尝试提取文件
+            import re
+            file_matches = re.findall(r'"path"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"([^"]+)"', result, re.DOTALL)
+            for path, content in file_matches:
+                files.append({'path': path, 'content': content})
 
         if not files:
-            self.log("  ❌ 代码生成失败", "ERROR")
+            self.log("  ❌ 未生成任何文件", "ERROR")
             return {'success': False}
 
         # 写入文件
+        self.reporter.stop()
+        self.log(f"\n💾 写入 {len(files)} 个文件:")
         total = len(files)
         for idx, f in enumerate(files):
             self.reporter.start(f"写入文件中 ({idx+1}/{total}): {f['path']}")
@@ -374,14 +398,57 @@ class ClaudeDriver:
             self.reporter.stop()
             self.log(f"  ✅ {f['path']} ({len(f['content'])} bytes)")
 
-        # Step 5: 质量检查
-        self.log("\n🔍 步骤5: 质量检查...")
-        review = self.review_code(files)
+        # 循环 Review - 定期回顾改进
+        self.log("\n🔄 开始代码审查循环...")
+        for cycle in range(1, 6):  # 最多5轮
+            self.log(f"\n🔍 审查循环 {cycle}/5")
+            self.reporter.start(f"审查代码中 ({cycle}/5)...")
 
-        if review['passed']:
-            self.log(f"  ✅ 通过 (score: {review['score']}/10)")
-        else:
-            self.log(f"  ⚠️ {len(review['issues'])} 个问题")
+            # 让 Claude 审查代码
+            review_prompt = f"""请审查以下已生成的代码，找出问题和改进点。
+
+已生成的文件:
+{chr(10).join(f"- {f['path']}" for f in files)}
+
+请检查:
+1. 语法错误
+2. 逻辑问题
+3. 安全性问题
+4. 是否符合需求
+
+返回格式:
+{{"issues": ["问题1", "问题2"], "fixed": true/false, "improved_files": [{{"path": "文件", "content": "改进后的代码"}}]}}"""
+
+            review_result = self.call_claude(review_prompt)
+            self.reporter.stop()
+
+            if not review_result:
+                break
+
+            # 解析审查结果
+            try:
+                if '```json' in review_result:
+                    review_result = review_result.split('```json')[1].split('```')[0]
+                review_data = json.loads(review_result.strip())
+            except:
+                break
+
+            issues = review_data.get('issues', [])
+            improved = review_data.get('improved_files', [])
+
+            if not issues or not improved:
+                self.log("  ✅ 代码审查通过!")
+                break
+
+            # 应用改进
+            self.log(f"  ⚠️ 发现 {len(issues)} 个问题，改进中...")
+            for f in improved:
+                path = self.project_path / f['path']
+                path.write_text(f['content'])
+                self.log(f"  ✅ 改进: {f['path']}")
+
+            # 更新文件列表
+            files = [f for f in files if f['path'] not in [i['path'] for i in improved]] + improved
 
         self.log("\n✅ 开发完成!")
         self.logger.info("=" * 50)
