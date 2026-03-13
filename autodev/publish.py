@@ -225,7 +225,7 @@ def _serve_local_md(cwd: Path, port: int):
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            pass
+            print('\n🛑 已停止', flush=True)
 
 
 def _serve_http(cwd: Path, port: int):
