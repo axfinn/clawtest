@@ -78,27 +78,133 @@ def ensure_mkdocs() -> bool:
     return True
 
 
-def _serve_grip(cwd: Path, port: int) -> bool:
-    """用 grip 渲染 markdown，支持预览任意目录（包括 process/）"""
-    if not shutil.which('grip'):
-        r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'grip'],
+def _ensure_markdown_pkg() -> bool:
+    """确保 markdown 包可用（纯本地渲染，不依赖 GitHub API）"""
+    try:
+        import markdown  # noqa
+        return True
+    except ImportError:
+        r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'markdown'],
                            capture_output=True)
-        if r.returncode != 0:
-            return False
+        return r.returncode == 0
 
-    # grip 需要 README.md 作为入口；若没有，指向第一个 .md 文件
-    entry = cwd
-    if not (cwd / 'README.md').exists():
-        md_files = sorted(cwd.glob('*.md'))
-        if md_files:
-            entry = md_files[0]
 
-    print(f"\n📖 grip markdown 预览  http://127.0.0.1:{port}")
-    print(f"   入口: {entry.relative_to(cwd) if entry != cwd else '.'}")
-    print(f"   目录: {cwd}")
+_MD_CSS = """
+body{max-width:860px;margin:0 auto;padding:2em 1.5em;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#24292e}
+h1,h2,h3{border-bottom:1px solid #eaecef;padding-bottom:.3em}
+code{background:#f6f8fa;border-radius:3px;padding:.2em .4em;font-size:90%}
+pre{background:#f6f8fa;border-radius:6px;padding:1em;overflow:auto}
+pre code{background:none;padding:0}
+blockquote{border-left:4px solid #dfe2e5;color:#6a737d;margin:0;padding:0 1em}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #dfe2e5;padding:.4em .8em}
+th{background:#f6f8fa}
+a{color:#0366d6}
+nav{position:fixed;top:0;left:0;width:220px;height:100vh;overflow-y:auto;background:#f6f8fa;border-right:1px solid #e1e4e8;padding:1em .8em;font-size:.85em}
+nav h3{margin:.5em 0;font-size:.9em;color:#586069;text-transform:uppercase;letter-spacing:.05em}
+nav a{display:block;padding:.25em .4em;color:#24292e;text-decoration:none;border-radius:4px}
+nav a:hover,nav a.active{background:#e1e4e8}
+main{margin-left:240px}
+@media(max-width:700px){nav{display:none}main{margin-left:0}}
+"""
+
+
+def _serve_local_md(cwd: Path, port: int):
+    """纯本地 markdown 渲染服务，无需任何外部 API"""
+    if not _ensure_markdown_pkg():
+        _serve_http(cwd, port)
+        return
+
+    import markdown as md_lib
+    import http.server, urllib.parse, html
+
+    md_files = sorted(cwd.rglob('*.md'))
+
+    def render_nav(current: Path) -> str:
+        items = []
+        # 按目录分组
+        dirs: dict[str, list] = {}
+        for f in md_files:
+            rel = f.relative_to(cwd)
+            d = str(rel.parent) if str(rel.parent) != '.' else ''
+            dirs.setdefault(d, []).append(f)
+        for d, files in sorted(dirs.items()):
+            if d:
+                items.append(f'<h3>{html.escape(d)}</h3>')
+            for f in sorted(files):
+                rel = f.relative_to(cwd)
+                active = ' class="active"' if f == current else ''
+                items.append(f'<a href="/{urllib.parse.quote(str(rel))}"{active}>{html.escape(f.stem)}</a>')
+        return '\n'.join(items)
+
+    def render_page(path: Path) -> str:
+        text = path.read_text(encoding='utf-8')
+        body = md_lib.markdown(text, extensions=['tables', 'fenced_code', 'toc'])
+        nav  = render_nav(path)
+        title = path.stem
+        return f"""<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>{html.escape(title)}</title>
+<style>{_MD_CSS}</style></head><body>
+<nav><b>📁 {html.escape(cwd.name)}</b><br><br>{nav}</nav>
+<main>{body}</main></body></html>"""
+
+    def render_index() -> str:
+        nav = render_nav(Path('/dev/null'))
+        items = ''.join(
+            f'<li><a href="/{urllib.parse.quote(str(f.relative_to(cwd)))}">'
+            f'{html.escape(str(f.relative_to(cwd)))}</a></li>'
+            for f in md_files
+        )
+        return f"""<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>{html.escape(cwd.name)}</title>
+<style>{_MD_CSS}</style></head><body>
+<nav><b>📁 {html.escape(cwd.name)}</b><br><br>{nav}</nav>
+<main><h1>📁 {html.escape(cwd.name)}</h1><ul>{items}</ul></main>
+</body></html>"""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass  # 静默日志
+
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            url_path = urllib.parse.unquote(parsed.path).lstrip('/')
+
+            if not url_path:
+                content = render_index().encode()
+            else:
+                target = (cwd / url_path).resolve()
+                # 安全：限制在 cwd 内
+                try:
+                    target.relative_to(cwd)
+                except ValueError:
+                    self.send_error(403)
+                    return
+                if not target.exists():
+                    self.send_error(404)
+                    return
+                if target.suffix == '.md':
+                    content = render_page(target).encode()
+                else:
+                    content = target.read_bytes()
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(content)
+
+    print(f"\n📖 本地 Markdown 预览  http://127.0.0.1:{port}")
+    print(f"   目录: {cwd}  ({len(md_files)} 个 md 文件)")
     print(f"   按 Ctrl+C 停止\n")
-    subprocess.run([sys.executable, '-m', 'grip', str(entry), f'0.0.0.0:{port}'])
-    return True
+    with http.server.HTTPServer(('0.0.0.0', port), Handler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 def _serve_http(cwd: Path, port: int):
@@ -137,10 +243,9 @@ def _serve_http(cwd: Path, port: int):
 
 def serve(cwd: Path, port: int = 8000):
     """
-    预览文档，三级降级策略：
-    1. 有 _site/        → mkdocs serve（渲染最好）
-    2. 无 _site/ 有 grip → grip 渲染 markdown
-    3. 兜底             → python http.server + html 索引
+    预览文档，两级策略：
+    1. 有 _site/ → mkdocs serve（渲染最好）
+    2. 其他      → 纯本地 markdown 渲染（不依赖任何外部 API）
     """
     site_dir = cwd / '_site'
 
@@ -153,12 +258,8 @@ def serve(cwd: Path, port: int = 8000):
         subprocess.run(cmd, cwd=str(cwd))
         return
 
-    # 策略2：grip 渲染 markdown（自动安装）
-    if _serve_grip(cwd, port):
-        return
-
-    # 策略3：兜底 http.server
-    _serve_http(cwd, port)
+    # 策略2：纯本地渲染（无需 GitHub API）
+    _serve_local_md(cwd, port)
 
 
 # ──────────────────────────────────────────────────────────────
