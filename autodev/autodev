@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# AutoDev - 万能任务助手  入口脚本
+# 用法: ./autodev "任务描述" [选项]
+#
+# 示例:
+#   ./autodev "写 Redis 集群最佳实践文档" --publish
+#   ./autodev "用 Go 写一个 HTTP 文件服务器" --path ./projects/fileserver --build
+#   ./autodev "分析 sales.csv 找出增长趋势"
+#   ./autodev "任务" --path /tmp/myproject --from 4   # 断点恢复
+
+set -e
+
+# 找到脚本所在目录（支持 symlink）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 检查 Python
+if ! command -v python3 &>/dev/null; then
+  echo "❌ 需要 python3，请先安装" >&2
+  exit 1
+fi
+
+# 检查 claude
+if ! command -v claude &>/dev/null; then
+  echo "❌ 需要 claude CLI，请先安装 Claude Code" >&2
+  exit 1
+fi
+
+# 无参数时显示帮助
+if [[ $# -eq 0 ]]; then
+  python3 "$SCRIPT_DIR/driver.py" --help
+  exit 0
+fi
+
+# 转发所有参数给 driver.py
+exec python3 "$SCRIPT_DIR/driver.py" "$@"

@@ -247,9 +247,15 @@ PHASE_LIST = [
     ("DELIVER  交付",  phase_deliver,  120),
 ]
 
-# 文档发布阶段（独立，由 --publish 标志触发）
-# 使用方式: from phases import phase_publish
+# 以下两个阶段由独立模块管理，通过 driver.py 的可选标志触发
+
 def phase_publish(task: str, cwd: Path) -> str:
-    """由 publish.py 独立管理，此处仅作占位引用"""
+    """--publish 触发，由 publish.py 管理"""
     from publish import publish_prompt
     return publish_prompt(task, cwd)
+
+
+def phase_build(task: str, cwd: Path) -> str:
+    """--build 触发，由 build.py 管理"""
+    from build import build_prompt
+    return build_prompt(task, cwd)

@@ -69,13 +69,16 @@ def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
 #  主流程
 # ──────────────────────────────────────────────────────────────
 
-def run(task: str, cwd: Path, start_phase: int = 0, publish: bool = False):
+def run(task: str, cwd: Path, start_phase: int = 0,
+        publish: bool = False, build: bool = False):
     cwd.mkdir(parents=True, exist_ok=True)
     (cwd / 'process').mkdir(exist_ok=True)
     (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
 
     total = len(PHASE_LIST)
     phases_str = " → ".join(name.split()[0] for name, _, _ in PHASE_LIST)
+    if build:
+        phases_str += " → BUILD"
     if publish:
         phases_str += " → PUBLISH"
 
@@ -102,6 +105,12 @@ def run(task: str, cwd: Path, start_phase: int = 0, publish: bool = False):
         if not ok:
             print(f"\n⚠️  [{label}] 执行异常，继续下一阶段...", flush=True)
 
+    # 可选：编译构建
+    if build:
+        from build import build as do_build
+        ok = do_build(task, cwd)
+        results["BUILD 编译构建"] = ok
+
     # 可选：文档发布
     if publish:
         from publish import publish as do_publish
@@ -125,6 +134,9 @@ def run(task: str, cwd: Path, start_phase: int = 0, publish: bool = False):
 
     if result_file.exists():
         print(f"📄 交付报告 : {result_file}")
+    build_log = cwd / 'process' / '06-build.md'
+    if build_log.exists():
+        print(f"🔨 构建报告 : {build_log}")
     if site_dir.exists():
         print(f"🌐 文档站   : {site_dir}/index.html")
         print(f"   本地预览 : cd {cwd} && mkdocs serve")
@@ -169,6 +181,8 @@ def main():
                         help='工作目录（默认自动生成 /tmp/autodev/<名称>/）')
     parser.add_argument('--from', dest='start_phase', type=int, default=1, metavar='N',
                         help='从第 N 阶段开始，1=DISCOVER … 6=DELIVER（断点恢复用）')
+    parser.add_argument('--build', action='store_true',
+                        help='完成后自动编译构建（Go/Rust/C/Java/Node/Python）')
     parser.add_argument('--publish', action='store_true',
                         help='完成后自动生成 MkDocs 文档站（含 PDF 导出）')
 
@@ -182,7 +196,7 @@ def main():
         print(f"📁 自动创建项目目录: {cwd}")
 
     start = max(0, args.start_phase - 1)
-    run(args.task, cwd, start_phase=start, publish=args.publish)
+    run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish)
 
 
 if __name__ == '__main__':
