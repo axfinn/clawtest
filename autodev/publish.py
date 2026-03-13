@@ -221,7 +221,13 @@ def _serve_local_md(cwd: Path, port: int):
     print(f"\n📖 本地 Markdown 预览  http://{local_ip}:{port}  (0.0.0.0 监听)")
     print(f"   目录: {cwd}  ({len(md_files)} 个 md 文件)")
     print(f"   按 Ctrl+C 停止\n")
+    import signal
     with http.server.HTTPServer(('0.0.0.0', port), Handler) as httpd:
+        def _shutdown(sig, frame):
+            print('\n🛑 已停止', flush=True)
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+        signal.signal(signal.SIGINT, _shutdown)
+        signal.signal(signal.SIGTERM, _shutdown)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
