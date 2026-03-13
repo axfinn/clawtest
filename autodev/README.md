@@ -100,6 +100,18 @@ AutoDev 会自动扫描本地 Claude Code skills，在合适的阶段注入到 p
 
 **工作原理：** DO / REVIEW / DELIVER 阶段会根据任务关键词自动匹配相关 skill，将 skill 内容追加到 prompt，让 claude 按 skill 规范执行。无需任何配置，把优秀的 skill 放到 `~/.claude/commands/` 即可自动生效。
 
+## 单独预览文档
+
+```bash
+# serve 子命令：直接预览已有项目文档站
+./autodev serve --path /tmp/autodev/<项目名>
+
+# 自定义端口
+./autodev serve --path /tmp/autodev/<项目名> --port 9000
+
+# 然后浏览器打开 http://127.0.0.1:8000
+```
+
 ## 独立使用 publish 模块
 
 ```bash

@@ -237,6 +237,10 @@ def main():
 
   # 对已有目录单独发布文档站
   python3 publish.py --path /tmp/autodev/xxx --task "文档描述"
+
+  # 直接预览已有项目文档（serve 子命令）
+  autodev serve --path /tmp/autodev/xxx
+  autodev serve --path /tmp/autodev/xxx --port 9000
         """,
     )
     parser.add_argument('task', nargs='?', default='', help='任务描述（任何类型）')
@@ -254,8 +258,25 @@ def main():
                         help='完成后自动 git push 到远端（无需确认）')
     parser.add_argument('--serve', action='store_true',
                         help='--publish 完成后自动启动文档预览服务器')
+    parser.add_argument('--port', type=int, default=8000,
+                        help='serve 预览端口（默认 8000）')
 
     args = parser.parse_args()
+
+    # `serve <path>` 子命令：直接预览已有项目的文档站
+    if args.task == 'serve':
+        from publish import serve as do_serve, ensure_mkdocs
+        target = Path(args.path).resolve() if args.path else None
+        if not target:
+            print("用法: autodev serve --path /tmp/autodev/<项目名> [--port 8000]")
+            return
+        if not target.exists():
+            print(f"❌ 目录不存在: {target}")
+            return
+        ensure_mkdocs()
+        port = getattr(args, 'port', 8000)
+        do_serve(target, port=port)
+        return
 
     # --list-skills 模式（无需 task）
     if args.list_skills:
