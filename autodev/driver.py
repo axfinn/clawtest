@@ -215,6 +215,56 @@ def run(task: str, cwd: Path, start_phase: int = 0,
 #  入口
 # ──────────────────────────────────────────────────────────────
 
+def _spawn_background(args) -> None:
+    """
+    将自身以后台独立进程重新启动：
+    - start_new_session=True  → 新 session，不受终端 SIGHUP 影响
+    - stdin=DEVNULL            → 无 stdin，不触发 SIGTTIN
+    - stdout/stderr → 日志文件 → 终端断开也不丢输出
+    """
+    import subprocess as _sp
+
+    # 确定日志目录（提前算好 cwd，方便用户知道去哪里看）
+    if args.path:
+        cwd_path = Path(args.path).resolve()
+    else:
+        cwd_path = make_project_dir(args.task)
+
+    log_dir = cwd_path / '.autodev' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    bg_log = log_dir / 'bg.log'
+
+    # 重新组装命令行（去掉 --bg，加上 --path 固定目录）
+    cmd = [sys.executable, __file__]
+    cmd += ['--path', str(cwd_path)]
+    if args.task:
+        cmd += [args.task]
+    if args.start_phase and args.start_phase != 1:
+        cmd += ['--from', str(args.start_phase)]
+    if getattr(args, 'build', False):
+        cmd.append('--build')
+    if getattr(args, 'publish', False):
+        cmd.append('--publish')
+    if getattr(args, 'push', False):
+        cmd.append('--push')
+
+    with open(bg_log, 'a') as log_f:
+        proc = _sp.Popen(
+            cmd,
+            stdin=_sp.DEVNULL,
+            stdout=log_f,
+            stderr=log_f,
+            start_new_session=True,   # setsid：新 session，免疫 SIGHUP
+            cwd=str(Path(__file__).parent),
+        )
+
+    print(f"🚀 后台启动成功")
+    print(f"   PID : {proc.pid}")
+    print(f"   目录: {cwd_path}")
+    print(f"   日志: {bg_log}")
+    print(f"   实时查看: tail -f {bg_log}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='AutoDev - 万能任务助手（DISCOVER→DEFINE→DESIGN→DO→REVIEW→DELIVER）',
@@ -262,8 +312,15 @@ def main():
                         help='serve 预览端口（默认 8000）')
     parser.add_argument('--process', action='store_true',
                         help='serve 时直接预览 process/ 执行过程目录')
+    parser.add_argument('--bg', action='store_true',
+                        help='后台运行（自动 setsid + 日志重定向，无需 nohup &）')
 
     args = parser.parse_args()
+
+    # --bg: 后台独立进程运行，防止终端断开导致任务中断
+    if getattr(args, 'bg', False):
+        _spawn_background(args)
+        return
 
     # `serve <path>` 子命令：直接预览已有项目的文档站
     if args.task == 'serve':

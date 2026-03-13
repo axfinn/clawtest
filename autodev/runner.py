@@ -139,6 +139,7 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,   # 切断 stdin：防 SIGTTIN（后台挂起）/ SIGHUP（终端断开）
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
