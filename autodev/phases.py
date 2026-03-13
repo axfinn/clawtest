@@ -269,12 +269,12 @@ RESULT.md 就是最终交付物，清晰、完整、让用户一眼看懂。
 # 格式: (显示名称, prompt函数, 超时秒数/None=不限)
 # ─────────────────────────────────────────────────────────────
 PHASE_LIST = [
-    ("DISCOVER 发现",  phase_discover, 180),
-    ("DEFINE   定义",  phase_define,   120),
-    ("DESIGN   设计",  phase_design,   120),
+    ("DISCOVER 发现",  phase_discover, 360),
+    ("DEFINE   定义",  phase_define,   240),
+    ("DESIGN   设计",  phase_design,   360),
     ("DO       执行",  phase_do,       None),
-    ("REVIEW   审查",  phase_review,   300),
-    ("DELIVER  交付",  phase_deliver,  120),
+    ("REVIEW   审查",  phase_review,   600),
+    ("DELIVER  交付",  phase_deliver,  240),
 ]
 
 # 以下两个阶段由独立模块管理，通过 driver.py 的可选标志触发
