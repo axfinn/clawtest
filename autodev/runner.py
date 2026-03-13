@@ -129,7 +129,9 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
     print(f"\n{'='*60}", flush=True)
     print(f"▶  {label}", flush=True)
     if timeout:
-        print(f"   ⏱  超时限制: {timeout}s  空闲检测: {IDLE_TIMEOUT}s", flush=True)
+        print(f"   ⏱  总超时: {timeout}s  空闲超时: {IDLE_TIMEOUT}s", flush=True)
+    else:
+        print(f"   ⏱  空闲超时: {IDLE_TIMEOUT}s（无总时限）", flush=True)
     print('='*60, flush=True)
 
     turns = None
