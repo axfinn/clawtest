@@ -64,7 +64,7 @@ chmod +x autodev
 # 文档类任务 → 自动生成文档站（mkdocs 没装会自动安装）
 ./autodev "写 K8s 入门手册" --publish
 
-# 完成后预览文档（--serve 启动本地 http://127.0.0.1:8000）
+# 完成后预览文档（--serve 启动本地服务器，监听 0.0.0.0:8000）
 ./autodev "写 K8s 入门手册" --publish --serve
 
 # 完成后直接推送到远端（无需确认）
@@ -112,13 +112,12 @@ AutoDev 会自动扫描本地 Claude Code skills，在合适的阶段注入到 p
 # 自定义端口
 ./autodev serve --path /tmp/autodev/<项目名> --port 9000
 
-# 然后浏览器打开 http://127.0.0.1:8000
+# 启动后终端显示真实 IP，如：http://10.23.29.11:8000
 ```
 
-**降级策略**（自动选择最佳方式）：
+**降级策略**（自动选择最佳方式，监听 `0.0.0.0` 局域网可访问）：
 1. 有 `_site/` → `mkdocs serve`（渲染最好）
-2. 无 `_site/` → `grip` 渲染 markdown（自动 pip 安装）
-3. 兜底 → Python 内置 `http.server` + HTML 文件索引
+2. 无 `_site/` → 纯本地 markdown 渲染（`python-markdown`，自动安装，**不依赖 GitHub API**）
 
 ## 独立使用 publish 模块
 
