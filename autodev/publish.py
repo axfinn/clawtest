@@ -198,7 +198,13 @@ def _serve_local_md(cwd: Path, port: int):
             self.wfile.write(content)
 
     import socket
-    local_ip = socket.gethostbyname(socket.gethostname())
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = '0.0.0.0'
     print(f"\n📖 本地 Markdown 预览  http://{local_ip}:{port}  (0.0.0.0 监听)")
     print(f"   目录: {cwd}  ({len(md_files)} 个 md 文件)")
     print(f"   按 Ctrl+C 停止\n")
@@ -254,8 +260,14 @@ def serve(cwd: Path, port: int = 8000):
     # 策略1：已构建文档站
     if site_dir.exists() and shutil.which('mkdocs'):
         import socket
-    local_ip = socket.gethostbyname(socket.gethostname())
-    print(f"\n🌐 MkDocs 文档站预览  http://{local_ip}:{port}  (0.0.0.0 监听)")
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            local_ip = '0.0.0.0'
+        print(f"\n🌐 MkDocs 文档站预览  http://{local_ip}:{port}  (0.0.0.0 监听)")
         print(f"   目录: {cwd}")
         print(f"   按 Ctrl+C 停止\n")
         cmd = ['mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
