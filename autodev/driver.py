@@ -260,12 +260,14 @@ def main():
                         help='--publish 完成后自动启动文档预览服务器')
     parser.add_argument('--port', type=int, default=8000,
                         help='serve 预览端口（默认 8000）')
+    parser.add_argument('--process', action='store_true',
+                        help='serve 时直接预览 process/ 执行过程目录')
 
     args = parser.parse_args()
 
     # `serve <path>` 子命令：直接预览已有项目的文档站
     if args.task == 'serve':
-        from publish import serve as do_serve, ensure_mkdocs
+        from publish import serve as do_serve
         target = Path(args.path).resolve() if args.path else None
         if not target:
             print("用法: autodev serve --path /tmp/autodev/<项目名> [--port 8000]")
@@ -273,7 +275,10 @@ def main():
         if not target.exists():
             print(f"❌ 目录不存在: {target}")
             return
-        ensure_mkdocs()
+        # --process：直接预览 process/ 子目录
+        if getattr(args, 'process', False):
+            proc_dir = target / 'process'
+            target = proc_dir if proc_dir.exists() else target
         port = getattr(args, 'port', 8000)
         do_serve(target, port=port)
         return

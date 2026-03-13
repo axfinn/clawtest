@@ -103,14 +103,22 @@ AutoDev 会自动扫描本地 Claude Code skills，在合适的阶段注入到 p
 ## 单独预览文档
 
 ```bash
-# serve 子命令：直接预览已有项目文档站
+# 预览文档站（有 _site/ 用 mkdocs，否则自动降级）
 ./autodev serve --path /tmp/autodev/<项目名>
+
+# 直接预览 process/ 执行过程（01-discover ~ 05-review）
+./autodev serve --path /tmp/autodev/<项目名> --process
 
 # 自定义端口
 ./autodev serve --path /tmp/autodev/<项目名> --port 9000
 
 # 然后浏览器打开 http://127.0.0.1:8000
 ```
+
+**降级策略**（自动选择最佳方式）：
+1. 有 `_site/` → `mkdocs serve`（渲染最好）
+2. 无 `_site/` → `grip` 渲染 markdown（自动 pip 安装）
+3. 兜底 → Python 内置 `http.server` + HTML 文件索引
 
 ## 独立使用 publish 模块
 

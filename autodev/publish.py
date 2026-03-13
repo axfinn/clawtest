@@ -78,27 +78,87 @@ def ensure_mkdocs() -> bool:
     return True
 
 
-def serve(cwd: Path, port: int = 8000):
-    """本地预览文档站（阻塞，Ctrl+C 退出）"""
-    mkdocs_cmd = 'mkdocs' if shutil.which('mkdocs') else None
-    if not mkdocs_cmd:
-        # 尝试 python -m mkdocs
-        r = subprocess.run([sys.executable, '-m', 'mkdocs', '--version'],
+def _serve_grip(cwd: Path, port: int) -> bool:
+    """用 grip 渲染 markdown，支持预览任意目录（包括 process/）"""
+    if not shutil.which('grip'):
+        r = subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'grip'],
                            capture_output=True)
-        if r.returncode == 0:
-            mkdocs_cmd = f"{sys.executable} -m mkdocs"
+        if r.returncode != 0:
+            return False
 
-    if not mkdocs_cmd:
-        print("❌ mkdocs 未安装，请先运行 --publish", file=sys.stderr)
-        sys.exit(1)
+    # grip 需要 README.md 作为入口；若没有，指向第一个 .md 文件
+    entry = cwd
+    if not (cwd / 'README.md').exists():
+        md_files = sorted(cwd.glob('*.md'))
+        if md_files:
+            entry = md_files[0]
 
-    print(f"\n🌐 启动文档预览服务器 http://127.0.0.1:{port}")
+    print(f"\n📖 grip markdown 预览  http://127.0.0.1:{port}")
+    print(f"   入口: {entry.relative_to(cwd) if entry != cwd else '.'}")
     print(f"   目录: {cwd}")
     print(f"   按 Ctrl+C 停止\n")
-    cmd = ['mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
-    if not shutil.which('mkdocs'):
-        cmd = [sys.executable, '-m', 'mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
-    subprocess.run(cmd, cwd=str(cwd))
+    subprocess.run([sys.executable, '-m', 'grip', str(entry), f'0.0.0.0:{port}'])
+    return True
+
+
+def _serve_http(cwd: Path, port: int):
+    """用 Python 内置 http.server 兜底，生成简单 HTML 索引"""
+    import html, urllib.parse
+
+    # 生成一个简单的 index.html 列出所有 md 文件
+    md_files = sorted(cwd.rglob('*.md'))
+    items = []
+    for f in md_files:
+        rel = f.relative_to(cwd)
+        items.append(f'<li><a href="{urllib.parse.quote(str(rel))}">{rel}</a></li>')
+
+    index = cwd / '_autodev_index.html'
+    index.write_text(f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{cwd.name}</title>
+<style>body{{font-family:sans-serif;padding:2em}} li{{margin:.4em 0}}</style>
+</head><body>
+<h2>📁 {html.escape(cwd.name)}</h2>
+<ul>{''.join(items)}</ul>
+<p style="color:#888">raw markdown — 建议用 <code>--publish</code> 获得渲染版</p>
+</body></html>""", encoding='utf-8')
+
+    print(f"\n📂 简易文件列表  http://127.0.0.1:{port}/_autodev_index.html")
+    print(f"   目录: {cwd}")
+    print(f"   按 Ctrl+C 停止\n")
+    import http.server, functools
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(cwd))
+    with http.server.HTTPServer(('0.0.0.0', port), handler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    index.unlink(missing_ok=True)
+
+
+def serve(cwd: Path, port: int = 8000):
+    """
+    预览文档，三级降级策略：
+    1. 有 _site/        → mkdocs serve（渲染最好）
+    2. 无 _site/ 有 grip → grip 渲染 markdown
+    3. 兜底             → python http.server + html 索引
+    """
+    site_dir = cwd / '_site'
+
+    # 策略1：已构建文档站
+    if site_dir.exists() and shutil.which('mkdocs'):
+        print(f"\n🌐 MkDocs 文档站预览  http://127.0.0.1:{port}")
+        print(f"   目录: {cwd}")
+        print(f"   按 Ctrl+C 停止\n")
+        cmd = ['mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
+        subprocess.run(cmd, cwd=str(cwd))
+        return
+
+    # 策略2：grip 渲染 markdown（自动安装）
+    if _serve_grip(cwd, port):
+        return
+
+    # 策略3：兜底 http.server
+    _serve_http(cwd, port)
 
 
 # ──────────────────────────────────────────────────────────────
