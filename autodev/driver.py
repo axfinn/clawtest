@@ -25,29 +25,38 @@ from state import (
 #  工具函数
 # ──────────────────────────────────────────────────────────────
 
-def slugify(text: str, max_len: int = 30) -> str:
-    """将任务描述转为目录名"""
-    # 提取前几个有意义的词
+def slugify(text: str, max_len: int = 40) -> str:
+    """
+    将任务描述转为英文目录名。
+    策略：让 claude 翻译（在线），或本地提取关键英文词 + 时间戳。
+    这里用本地轻量方案：提取英文字母数字 + 替换空格，
+    中文部分通过 pinyin/简单映射忽略（保留已有英文词）。
+    """
     text = text.strip()
-    # 去掉标点，保留中文、字母、数字、空格
-    cleaned = re.sub(r'[^\w\u4e00-\u9fff\s]', '', text)
-    # 取前 max_len 字符，去掉末尾空格
-    slug = cleaned[:max_len].strip()
-    # 空格 → 连字符
-    slug = re.sub(r'\s+', '-', slug)
+    # 只保留 ASCII 字母、数字、空格、连字符
+    ascii_only = re.sub(r'[^a-zA-Z0-9\s\-]', ' ', text)
+    words = ascii_only.split()
+    if words:
+        slug = '-'.join(w.lower() for w in words[:6])  # 最多6个词
+    else:
+        # 纯中文：用固定前缀 + 时间戳区分
+        slug = 'task'
+    # 截断
+    slug = slug[:max_len].strip('-')
     return slug or 'task'
 
 
 def make_project_dir(task: str) -> Path:
-    """自动生成项目目录：/tmp/autodev/<task-slug>-<时间戳>"""
+    """自动生成项目目录：/tmp/autodev/<英文slug>-<时间戳>"""
     base = Path('/tmp/autodev')
     slug = slugify(task)
     ts   = datetime.now().strftime('%m%d-%H%M')
-    return base / f"{slug}-{ts}"
+    name = f"{slug}-{ts}" if slug != 'task' else f"task-{ts}"
+    return base / name
 
 
 def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
-    """在 .autodev/logs/session.log 写入本次会话摘要"""
+    """在 .autodev/logs/session.log 写入本次会话摘要（含目录名↔任务原文对照）"""
     log_dir = cwd / '.autodev' / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -55,9 +64,10 @@ def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
     lines = [
         f"\n{'#'*70}",
         f"# AutoDev 会话记录",
-        f"# 任务: {task}",
-        f"# 时间: {ts}",
-        f"# 目录: {cwd}",
+        f"# 时间    : {ts}",
+        f"# 目录    : {cwd.name}",        # 英文目录名，便于 shell 操作
+        f"# 全路径  : {cwd}",
+        f"# 任务原文: {task}",             # 中文原始需求，便于回溯
         f"{'#'*70}",
         "",
     ]
@@ -67,6 +77,11 @@ def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
 
     with open(log_dir / 'session.log', 'a', encoding='utf-8') as f:
         f.write('\n'.join(lines))
+
+    # 同时在 /tmp/autodev/.index 维护全局索引（目录名 → 任务原文）
+    index_file = cwd.parent / '.index'
+    with open(index_file, 'a', encoding='utf-8') as f:
+        f.write(f"{ts}\t{cwd.name}\t{task}\n")
 
 
 # ──────────────────────────────────────────────────────────────

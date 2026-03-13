@@ -99,6 +99,7 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
         str(claude_bin),
         '--print',
         '--dangerously-skip-permissions',
+        '--verbose',
         '--output-format', 'stream-json',
         '-p', prompt,
     ]

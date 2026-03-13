@@ -27,26 +27,42 @@ def load_state(cwd: Path) -> dict:
     return {}
 
 
+def load_index() -> dict:
+    """读取 /tmp/autodev/.index，返回 {目录名: 任务原文}"""
+    index_file = BASE_DIR / '.index'
+    mapping = {}
+    if index_file.exists():
+        for line in index_file.read_text(encoding='utf-8').splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                mapping[parts[1]] = parts[2]
+    return mapping
+
+
 def list_projects():
     if not BASE_DIR.exists():
         print("（/tmp/autodev/ 下暂无项目）")
         return
 
-    projects = sorted(BASE_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    projects = [p for p in sorted(BASE_DIR.iterdir(),
+                key=lambda p: p.stat().st_mtime, reverse=True) if p.is_dir()]
     if not projects:
         print("（暂无项目）")
         return
 
-    print(f"{'目录':<40} {'状态':<12} {'当前阶段'}")
-    print('─' * 75)
+    index = load_index()
+
+    print(f"\n{'目录名':<38} {'状态':<10} {'任务原文'}")
+    print('─' * 90)
     for p in projects:
-        if not p.is_dir():
-            continue
-        state = load_state(p)
+        state  = load_state(p)
         status = state.get('status', 'unknown')
-        phase  = state.get('phase_label', '─')
+        phase  = state.get('phase_label', '')
         icon   = {'running': '🔄', 'finished': '✅', 'unknown': '❓'}.get(status, '❓')
-        print(f"{str(p):<40} {icon} {status:<10} {phase}")
+        task   = index.get(p.name, state.get('task', '─'))
+        print(f"{p.name:<38} {icon} {status:<8} {task}")
+        if phase and status == 'running':
+            print(f"  {'':38}   当前阶段: {phase}")
 
 
 def stop_project(cwd: Path):
