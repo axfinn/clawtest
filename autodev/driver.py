@@ -15,6 +15,7 @@ from pathlib import Path
 
 from runner import run_phase
 from phases import PHASE_LIST
+from skills import list_skills
 from state import (
     mark_phase_start, mark_phase_done, mark_finished,
     last_completed_phase, should_stop, clear_stop, save_state, load_state,
@@ -89,7 +90,8 @@ def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
 # ──────────────────────────────────────────────────────────────
 
 def run(task: str, cwd: Path, start_phase: int = 0,
-        publish: bool = False, build: bool = False):
+        publish: bool = False, build: bool = False,
+        push: bool = False, serve: bool = False):
     cwd.mkdir(parents=True, exist_ok=True)
     (cwd / 'process').mkdir(exist_ok=True)
     (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
@@ -154,6 +156,24 @@ def run(task: str, cwd: Path, start_phase: int = 0,
         ok = do_publish(task, cwd)
         results["PUBLISH 文档发布"] = ok
 
+    # 可选：推送到远端（无需确认）
+    if push:
+        import subprocess as _sp
+        print(f"\n🚀 git push 到远端...", flush=True)
+        r = _sp.run(['git', 'push'], cwd=str(cwd), capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"   ✅ push 成功", flush=True)
+            results["PUSH 推送远端"] = True
+        else:
+            # 尝试 push --set-upstream
+            branch = _sp.run(['git', 'branch', '--show-current'],
+                             cwd=str(cwd), capture_output=True, text=True).stdout.strip()
+            r2 = _sp.run(['git', 'push', '--set-upstream', 'origin', branch],
+                         cwd=str(cwd), capture_output=True, text=True)
+            ok = r2.returncode == 0
+            print(f"   {'✅' if ok else '⚠️ '} push {'成功' if ok else '失败: ' + r2.stderr.strip()[-100:]}", flush=True)
+            results["PUSH 推送远端"] = ok
+
     mark_finished(cwd)
     # 会话日志
     write_session_log(cwd, task, PHASE_LIST, results)
@@ -179,6 +199,11 @@ def run(task: str, cwd: Path, start_phase: int = 0,
         print(f"🌐 文档站   : {site_dir}/index.html")
         print(f"   本地预览 : cd {cwd} && mkdocs serve")
         print(f"   部署     : cd {cwd} && mkdocs gh-deploy")
+
+    # --serve：自动启动预览（阻塞）
+    if serve and site_dir.exists():
+        from publish import serve as do_serve
+        do_serve(cwd)
     if pdf_file.exists():
         print(f"📚 PDF 文件 : {pdf_file}")
     print(f"📝 执行日志 : {log_dir}/")
@@ -214,17 +239,33 @@ def main():
   python3 publish.py --path /tmp/autodev/xxx --task "文档描述"
         """,
     )
-    parser.add_argument('task', help='任务描述（任何类型）')
+    parser.add_argument('task', nargs='?', default='', help='任务描述（任何类型）')
     parser.add_argument('--path', '-p', default=None,
                         help='工作目录（默认自动生成 /tmp/autodev/<名称>/）')
     parser.add_argument('--from', dest='start_phase', type=int, default=1, metavar='N',
                         help='从第 N 阶段开始，1=DISCOVER … 6=DELIVER（断点恢复用）')
+    parser.add_argument('--list-skills', action='store_true',
+                        help='列出所有可用的本地 skills 后退出')
     parser.add_argument('--build', action='store_true',
                         help='完成后自动编译构建（Go/Rust/C/Java/Node/Python）')
     parser.add_argument('--publish', action='store_true',
                         help='完成后自动生成 MkDocs 文档站（含 PDF 导出）')
+    parser.add_argument('--push', action='store_true',
+                        help='完成后自动 git push 到远端（无需确认）')
+    parser.add_argument('--serve', action='store_true',
+                        help='--publish 完成后自动启动文档预览服务器')
 
     args = parser.parse_args()
+
+    # --list-skills 模式（无需 task）
+    if args.list_skills:
+        print("\n📦 本地可用 Skills:")
+        list_skills()
+        return
+
+    if not args.task:
+        parser.print_help()
+        return
 
     # 确定工作目录
     if args.path:
@@ -234,7 +275,8 @@ def main():
         print(f"📁 自动创建项目目录: {cwd}")
 
     start = max(0, args.start_phase - 1)
-    run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish)
+    run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish,
+        push=args.push, serve=args.serve)
 
 
 if __name__ == '__main__':

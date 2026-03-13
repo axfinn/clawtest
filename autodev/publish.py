@@ -13,8 +13,92 @@ AutoDev Publish - 文档发布模块
 import subprocess
 import sys
 import os
+import shutil
 from pathlib import Path
 from runner import run_phase
+
+
+# ──────────────────────────────────────────────────────────────
+#  环境保障：自动安装 mkdocs 依赖
+# ──────────────────────────────────────────────────────────────
+
+# 必须安装的包（核心）
+_REQUIRED = ['mkdocs', 'mkdocs-material']
+# 可选包（安装失败不阻断流程）
+_OPTIONAL = ['mkdocs-with-pdf', 'weasyprint']
+
+
+def _pip_install(packages: list[str], label: str = '') -> bool:
+    tag = f"[{label}] " if label else ""
+    pkgs = ' '.join(packages)
+    print(f"  📦 {tag}pip install {pkgs} ...", flush=True)
+    result = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '--quiet'] + packages,
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"  ⚠️  {tag}安装失败: {result.stderr.strip()[-200:]}", flush=True)
+        return False
+    return True
+
+
+def ensure_mkdocs() -> bool:
+    """
+    检查并安装 mkdocs 依赖。
+    - 必须包：mkdocs + mkdocs-material（安装失败则整体失败）
+    - 可选包：mkdocs-with-pdf / weasyprint（安装失败只警告）
+    返回 True 表示核心依赖就绪。
+    """
+    # 检查 mkdocs 命令是否已存在
+    if shutil.which('mkdocs'):
+        print("  ✅ mkdocs 已安装", flush=True)
+        # 仍然补装 material（可能缺主题）
+        _pip_install(['mkdocs-material'], label='material')
+    else:
+        print("  🔍 未检测到 mkdocs，开始自动安装...", flush=True)
+        if not _pip_install(_REQUIRED, label='core'):
+            print("  ❌ mkdocs 核心依赖安装失败，PUBLISH 阶段跳过", flush=True)
+            return False
+
+    # 可选依赖（PDF 支持），失败不影响主流程
+    _pip_install(_OPTIONAL, label='pdf')
+
+    # 最终再确认
+    if not shutil.which('mkdocs'):
+        # pip 装了但 PATH 里没有，尝试用 python -m mkdocs
+        result = subprocess.run(
+            [sys.executable, '-m', 'mkdocs', '--version'],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("  ❌ mkdocs 安装后仍无法运行", flush=True)
+            return False
+
+    print("  ✅ mkdocs 环境就绪", flush=True)
+    return True
+
+
+def serve(cwd: Path, port: int = 8000):
+    """本地预览文档站（阻塞，Ctrl+C 退出）"""
+    mkdocs_cmd = 'mkdocs' if shutil.which('mkdocs') else None
+    if not mkdocs_cmd:
+        # 尝试 python -m mkdocs
+        r = subprocess.run([sys.executable, '-m', 'mkdocs', '--version'],
+                           capture_output=True)
+        if r.returncode == 0:
+            mkdocs_cmd = f"{sys.executable} -m mkdocs"
+
+    if not mkdocs_cmd:
+        print("❌ mkdocs 未安装，请先运行 --publish", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n🌐 启动文档预览服务器 http://127.0.0.1:{port}")
+    print(f"   目录: {cwd}")
+    print(f"   按 Ctrl+C 停止\n")
+    cmd = ['mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
+    if not shutil.which('mkdocs'):
+        cmd = [sys.executable, '-m', 'mkdocs', 'serve', '--dev-addr', f'0.0.0.0:{port}']
+    subprocess.run(cmd, cwd=str(cwd))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -34,20 +118,7 @@ def publish_prompt(task: str, cwd: Path) -> str:
 
 ---
 
-## Step 1: 安装依赖
-
-用 Bash 工具执行:
-```bash
-pip install mkdocs-material mkdocs-with-pdf weasyprint 2>&1 | tail -5
-```
-如果 weasyprint 安装失败，改用:
-```bash
-pip install mkdocs-material mkdocs-with-pdf 2>&1 | tail -5
-```
-
----
-
-## Step 2: 分析文档结构
+## Step 1: 分析文档结构
 
 用 Glob 工具扫描 {cwd} 下所有 .md 文件，
 理解文档结构（RESULT.md、process/、docs/ 等），
@@ -177,7 +248,10 @@ echo "============================================"
 
 
 def publish(task: str, cwd: Path) -> bool:
-    """发布文档站"""
+    """发布文档站（自动保障 mkdocs 环境）"""
+    print("\n🔧 检查 mkdocs 环境...", flush=True)
+    if not ensure_mkdocs():
+        return False
     prompt = publish_prompt(task, cwd)
     return run_phase(prompt, cwd, "PUBLISH  文档发布", timeout=300)
 
@@ -201,12 +275,19 @@ def main():
     )
     parser.add_argument('--path', '-p', required=True, help='文档目录')
     parser.add_argument('--task', '-t', default='文档', help='任务/文档描述')
+    parser.add_argument('--serve', '-s', action='store_true',
+                        help='直接启动本地预览服务器（跳过构建）')
+    parser.add_argument('--port', type=int, default=8000, help='预览端口（默认 8000）')
     args = parser.parse_args()
 
     cwd = Path(args.path).resolve()
     if not cwd.exists():
         print(f"❌ 目录不存在: {cwd}", file=sys.stderr)
         sys.exit(1)
+
+    if args.serve:
+        serve(cwd, port=args.port)
+        return
 
     ok = publish(args.task, cwd)
     sys.exit(0 if ok else 1)

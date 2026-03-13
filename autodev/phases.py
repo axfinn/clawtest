@@ -14,6 +14,7 @@ AutoDev 阶段定义 - 基于哲学框架的通用问题解决方法论
 """
 
 from pathlib import Path
+from skills import augment_prompt
 
 
 # ─────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ def phase_design(task: str, cwd: Path) -> str:
 # Phase 4: DO  执行
 # ─────────────────────────────────────────────────────────────
 def phase_do(task: str, cwd: Path) -> str:
-    return f"""你是一个全能执行者，工作目录是 {cwd}。
+    base = f"""你是一个全能执行者，工作目录是 {cwd}。
 
 任务: {task}
 
@@ -152,13 +153,14 @@ def phase_do(task: str, cwd: Path) -> str:
    ## 产出文件列表
    ## 遇到的问题及解决方式
 """
+    return augment_prompt(base, task, project_root=cwd, phase_hint='do execute code write')
 
 
 # ─────────────────────────────────────────────────────────────
 # Phase 5: REVIEW  审查
 # ─────────────────────────────────────────────────────────────
 def phase_review(task: str, cwd: Path) -> str:
-    return f"""你是一个严格的质量审查员，工作目录是 {cwd}。
+    base = f"""你是一个严格的质量审查员，工作目录是 {cwd}。
 
 任务: {task}
 
@@ -182,6 +184,7 @@ def phase_review(task: str, cwd: Path) -> str:
    ## 发现的问题及修复情况
    ## 最终质量评估
 """
+    return augment_prompt(base, task, project_root=cwd, phase_hint='review quality simplify')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -189,7 +192,7 @@ def phase_review(task: str, cwd: Path) -> str:
 # ─────────────────────────────────────────────────────────────
 def phase_deliver(task: str, cwd: Path) -> str:
     short = task[:60].replace('"', "'")
-    return f"""你是一个注重用户体验的交付专家，工作目录是 {cwd}。
+    base = f"""你是一个注重用户体验的交付专家，工作目录是 {cwd}。
 
 任务: {task}
 
@@ -232,6 +235,7 @@ def phase_deliver(task: str, cwd: Path) -> str:
 
 RESULT.md 就是最终交付物，清晰、完整、让用户一眼看懂。
 """
+    return augment_prompt(base, task, project_root=cwd, phase_hint='deliver commit sync publish changelog')
 
 
 # ─────────────────────────────────────────────────────────────
