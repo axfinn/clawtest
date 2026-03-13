@@ -21,20 +21,24 @@ from skills import augment_prompt
 # Phase 1: DISCOVER  发现
 # ─────────────────────────────────────────────────────────────
 def phase_discover(task: str, cwd: Path) -> str:
-    return f"""你是一个运用第一性原理思考的万能问题解决者，工作目录是 {cwd}。
+    return f"""你是一个运用第一性原理思考的万能问题解决者。
 
 任务: {task}
+
+注意（重要）:
+- 输出目录（写 process/ 文件的地方）: {cwd}
+- 要分析的目标项目: 请从任务描述中识别实际项目路径或范围，不要扫描输出目录
 
 【DISCOVER - 发现阶段】
 
 目标: 尽可能全面地了解这个任务的"现实世界"
 
 请完成:
-1. **现状扫描**: 用 Glob + Read 扫描 {cwd} 下现有文件，理解已有什么
+1. **现状扫描**: 从任务描述中找出要分析的目标项目/目录，用 Glob + Read 扫描其文件结构，理解已有什么
 2. **知识调研**: 用 WebSearch 搜索该领域的背景知识、已有方案、最佳实践
    - 至少搜索 2-3 次，用不同关键词
    - 用 WebFetch 读取重要参考页面
-3. **记录发现**: 用 Write 将所有发现写入 process/01-discover.md，格式:
+3. **记录发现**: 用 Write 将所有发现写入 {cwd}/process/01-discover.md，格式:
 
    # DISCOVER - 发现报告
    ## 现状 (What exists)

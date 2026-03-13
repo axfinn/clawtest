@@ -4,6 +4,7 @@ Claude CLI 调用器
 - 流式输出到终端（实时进度）
 - 完整日志写入 .autodev/logs/
 - 移除嵌套检测，允许在任意环境运行
+- 超时/挂起自动终止
 """
 
 import subprocess
@@ -11,8 +12,14 @@ import os
 import json
 import sys
 import shutil
+import queue
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+# 空闲超时：连续多少秒无输出视为挂起，强制退出
+IDLE_TIMEOUT = 360  # 秒
 
 
 def find_claude() -> Path:
@@ -80,12 +87,27 @@ class PhaseLogger:
         self._write(footer, self.main_log)
 
 
+def _kill(proc: subprocess.Popen):
+    """先 terminate，再 kill，确保子进程退出"""
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    except OSError:
+        pass
+
+
 def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
     """
     运行一个阶段。
     - claude 在 cwd 下直接用工具完成任务
     - 实时输出到终端
     - 完整日志写入 .autodev/logs/
+    - timeout: 阶段总超时（秒），None 表示不限（但仍有空闲超时）
+    - 若进程挂起（无输出超过 IDLE_TIMEOUT 秒），自动终止
     """
     claude_bin = find_claude()
     logger = PhaseLogger(cwd, label)
@@ -106,6 +128,8 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
 
     print(f"\n{'='*60}", flush=True)
     print(f"▶  {label}", flush=True)
+    if timeout:
+        print(f"   ⏱  超时限制: {timeout}s  空闲检测: {IDLE_TIMEOUT}s", flush=True)
     print('='*60, flush=True)
 
     turns = None
@@ -122,7 +146,64 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
             env=env,
         )
 
-        for raw in proc.stdout:
+        # 用独立线程读 stdout，避免主线程阻塞
+        line_queue: queue.Queue = queue.Queue()
+
+        def _reader():
+            try:
+                for raw in proc.stdout:
+                    line_queue.put(raw)
+            finally:
+                line_queue.put(None)  # 哨兵：读完或出错
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
+        start_time      = time.monotonic()
+        last_output     = time.monotonic()
+        last_heartbeat  = time.monotonic()
+        timed_out       = False
+
+        HEARTBEAT_INTERVAL = 30  # 秒
+
+        while True:
+            now     = time.monotonic()
+            elapsed = now - start_time
+            idle    = now - last_output
+
+            # 心跳：每 30s 无输出时打一行证明进程还活着
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                last_heartbeat = now
+                print(f"   ⏳ 运行中... 已用 {elapsed:.0f}s，空闲 {idle:.0f}s/{IDLE_TIMEOUT}s", flush=True)
+                logger.write(f"[HEARTBEAT] elapsed={elapsed:.0f}s idle={idle:.0f}s\n")
+
+            # 总超时
+            if timeout and elapsed >= timeout:
+                timed_out = True
+                print(f"\n⏱  总超时 {timeout}s，强制终止 [{label}]", flush=True)
+                logger.write(f"TIMEOUT after {elapsed:.0f}s\n")
+                _kill(proc)
+                break
+
+            # 空闲超时（进程挂起、停止、卡死）
+            if idle >= IDLE_TIMEOUT:
+                timed_out = True
+                print(f"\n⏱  空闲超时 {IDLE_TIMEOUT}s（进程可能挂起），强制终止 [{label}]", flush=True)
+                logger.write(f"IDLE TIMEOUT after {idle:.0f}s idle\n")
+                _kill(proc)
+                break
+
+            # 从队列取一行，最多等 5 秒（然后重新检查超时）
+            try:
+                raw = line_queue.get(timeout=5)
+            except queue.Empty:
+                continue
+
+            if raw is None:
+                # 读线程结束（stdout 关闭）
+                break
+
+            last_output = time.monotonic()
             raw = raw.strip()
             if not raw:
                 continue
@@ -165,15 +246,16 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None) -> bool:
             except json.JSONDecodeError:
                 print(raw, flush=True)
 
-        proc.wait()
-        if proc.returncode != 0 and not success:
-            success = False
+        if not timed_out:
+            proc.wait()
+            if proc.returncode != 0 and not success:
+                success = False
 
     except FileNotFoundError as e:
         print(f"❌ {e}", file=sys.stderr)
         logger.write(f"ERROR: {e}\n")
     except KeyboardInterrupt:
-        proc.terminate()
+        _kill(proc)
         print("\n⚠️  用户中断", flush=True)
         logger.write("INTERRUPTED\n")
 
