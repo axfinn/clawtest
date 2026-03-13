@@ -15,6 +15,10 @@ from pathlib import Path
 
 from runner import run_phase
 from phases import PHASE_LIST
+from state import (
+    mark_phase_start, mark_phase_done, mark_finished,
+    last_completed_phase, should_stop, clear_stop, save_state, load_state,
+)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -93,13 +97,31 @@ def run(task: str, cwd: Path, start_phase: int = 0,
 
     results = {}
 
+    # 记录任务信息到 state（供 autodev-stop 读取）
+    st = load_state(cwd)
+    st['task'] = task
+    st['status'] = 'running'
+    save_state(cwd, st)
+
+    # 清除上次遗留的 STOP 信号（新运行时）
+    if start_phase == 0:
+        clear_stop(cwd)
+
     for i, (label, prompt_fn, timeout) in enumerate(PHASE_LIST):
         if i < start_phase:
             print(f"⏭  跳过: {label}")
             continue
 
+        # 检查终止信号
+        if should_stop(cwd):
+            print(f"\n🛑 收到终止信号，在阶段「{label}」前停止", flush=True)
+            print(f"   恢复运行: ./autodev \"{task}\" --path {cwd} --from {i+1}")
+            break
+
+        mark_phase_start(cwd, i, label)
         prompt = prompt_fn(task, cwd)
         ok = run_phase(prompt, cwd, f"{i+1}/{total}  {label}", timeout)
+        mark_phase_done(cwd, i, ok)
         results[label] = ok
 
         if not ok:
@@ -117,6 +139,7 @@ def run(task: str, cwd: Path, start_phase: int = 0,
         ok = do_publish(task, cwd)
         results["PUBLISH 文档发布"] = ok
 
+    mark_finished(cwd)
     # 会话日志
     write_session_log(cwd, task, PHASE_LIST, results)
 

@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+autodev-stop - 终止或查看 AutoDev 任务
+
+用法:
+  autodev-stop --list                        # 列出所有项目状态
+  autodev-stop --path /tmp/autodev/<项目>    # 终止指定项目
+  autodev-stop --all                         # 终止所有运行中的项目
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+BASE_DIR = Path('/tmp/autodev')
+
+
+def load_state(cwd: Path) -> dict:
+    p = cwd / '.autodev' / 'state.json'
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def list_projects():
+    if not BASE_DIR.exists():
+        print("（/tmp/autodev/ 下暂无项目）")
+        return
+
+    projects = sorted(BASE_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not projects:
+        print("（暂无项目）")
+        return
+
+    print(f"{'目录':<40} {'状态':<12} {'当前阶段'}")
+    print('─' * 75)
+    for p in projects:
+        if not p.is_dir():
+            continue
+        state = load_state(p)
+        status = state.get('status', 'unknown')
+        phase  = state.get('phase_label', '─')
+        icon   = {'running': '🔄', 'finished': '✅', 'unknown': '❓'}.get(status, '❓')
+        print(f"{str(p):<40} {icon} {status:<10} {phase}")
+
+
+def stop_project(cwd: Path):
+    """向项目写入 STOP 文件并发送信号"""
+    # 动态导入避免路径问题
+    import os, sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from state import request_stop, load_state
+
+    state = load_state(cwd)
+    status = state.get('status', 'unknown')
+
+    if status == 'finished':
+        print(f"ℹ️  {cwd.name} 已完成，无需终止")
+        return
+
+    request_stop(cwd)
+
+    last = state.get('last_completed', -1)
+    resume_from = last + 2  # 1-indexed，从下一阶段开始
+    task = state.get('task', '（未记录任务）')
+    print(f"✅ 已请求终止: {cwd}")
+    print(f"   断点恢复命令:")
+    print(f"   ./autodev \"{task}\" --path {cwd} --from {resume_from}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='autodev-stop - 终止或查看 AutoDev 任务',
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--list', '-l', action='store_true', help='列出所有项目状态')
+    group.add_argument('--path', '-p', help='终止指定项目目录')
+    group.add_argument('--all', '-a', action='store_true', help='终止所有运行中的项目')
+
+    args = parser.parse_args()
+
+    if args.list:
+        list_projects()
+
+    elif args.path:
+        cwd = Path(args.path).resolve()
+        if not cwd.exists():
+            print(f"❌ 目录不存在: {cwd}", file=sys.stderr)
+            sys.exit(1)
+        stop_project(cwd)
+
+    elif args.all:
+        if not BASE_DIR.exists():
+            print("（无运行中的项目）")
+            return
+        stopped = 0
+        for p in BASE_DIR.iterdir():
+            if not p.is_dir():
+                continue
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent))
+            from state import load_state as _ls
+            state = _ls(p)
+            if state.get('status') == 'running':
+                stop_project(p)
+                stopped += 1
+        if stopped == 0:
+            print("（无运行中的项目）")
+        else:
+            print(f"\n已终止 {stopped} 个项目")
+
+
+if __name__ == '__main__':
+    main()
