@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
 AutoDev - 万能任务助手
-串流程：Python 调度各阶段 → claude CLI 自主完成任务 → 产出结果 + 过程记录
+方法论: DISCOVER → DEFINE → DESIGN → DO → REVIEW → DELIVER
 """
 
 import argparse
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -13,20 +12,19 @@ from runner import run_phase
 from phases import PHASE_LIST
 
 
-def run(task: str, project_path: Path, start_phase: int = 0):
-    """
-    主流程：依次执行各阶段，claude 全程自主操作
-    start_phase: 0-indexed，用于断点恢复
-    """
-    project_path.mkdir(parents=True, exist_ok=True)
-    (project_path / 'process').mkdir(exist_ok=True)
+def run(task: str, cwd: Path, start_phase: int = 0):
+    cwd.mkdir(parents=True, exist_ok=True)
+    (cwd / 'process').mkdir(exist_ok=True)
+
+    total = len(PHASE_LIST)
+    phases_str = " → ".join(name.split()[0] for name, _, _ in PHASE_LIST)
 
     print(f"\n{'='*60}")
-    print(f"🤖 AutoDev 万能任务助手")
+    print(f"🤖 AutoDev  万能任务助手")
     print(f"   任务: {task}")
-    print(f"   目录: {project_path}")
+    print(f"   目录: {cwd}")
     print(f"   时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"   阶段: {len(PHASE_LIST)} 个")
+    print(f"   流程: {phases_str}")
     print('='*60)
 
     results = {}
@@ -36,63 +34,50 @@ def run(task: str, project_path: Path, start_phase: int = 0):
             print(f"⏭  跳过: {label}")
             continue
 
-        prompt = prompt_fn(task, project_path)
-        success = run_phase(prompt, project_path, f"阶段 {i+1}/{len(PHASE_LIST)}: {label}", timeout)
-        results[label] = success
+        prompt = prompt_fn(task, cwd)
+        ok = run_phase(prompt, cwd, f"{i+1}/{total}  {label}", timeout)
+        results[label] = ok
 
-        if not success:
-            print(f"\n⚠️  阶段「{label}」执行异常，继续下一阶段...", flush=True)
+        if not ok:
+            print(f"\n⚠️  [{label}] 执行异常，继续下一阶段...", flush=True)
 
     # 汇总
     print(f"\n{'='*60}")
     print("📊 执行汇总:")
     for label, ok in results.items():
-        icon = "✅" if ok else "⚠️ "
-        print(f"   {icon} {label}")
+        print(f"   {'✅' if ok else '⚠️ '} {label}")
 
-    result_file = project_path / 'RESULT.md'
-    if result_file.exists():
-        print(f"\n📄 交付报告: {result_file}")
-
-    print(f"📁 工作目录: {project_path}")
+    result_file = cwd / 'RESULT.md'
+    print(f"\n{'📄 交付报告: ' + str(result_file) if result_file.exists() else '⚠️  RESULT.md 未生成'}")
+    print(f"📁 工作目录: {cwd}")
     print(f"   完成时间: {datetime.now().strftime('%H:%M:%S')}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='AutoDev - 万能任务助手（无监管自主完成任务）',
+        description='AutoDev - 万能任务助手（无监管，DISCOVER→DEFINE→DESIGN→DO→REVIEW→DELIVER）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-任何任务都能完成：
+示例:
+  python3 driver.py "用 Flask 实现 JWT 用户认证" --path ./projects/auth
+  python3 driver.py "写一份 Kubernetes 入门技术文档" --path ./projects/k8s-doc
+  python3 driver.py "分析 sales.csv 找出增长趋势" --path ./projects/analysis
+  python3 driver.py "写一篇微服务架构博客" --path ./projects/blog
 
-  # 软件开发
-  python3 driver.py "用 Flask 创建用户认证系统" --path ./auth-project
-
-  # 文档写作
-  python3 driver.py "写一份 Redis 最佳实践技术文档" --path ./docs
-
-  # 数据分析
-  python3 driver.py "分析 data.csv，找出销售趋势并生成报告" --path ./analysis
-
-  # 内容创作
-  python3 driver.py "写一篇关于微服务架构的技术博客，附代码示例" --path ./blog
-
-  # 断点恢复（从第2阶段开始）
-  python3 driver.py "任务描述" --path ./output --from 2
+断点恢复（从 DO 阶段重跑）:
+  python3 driver.py "任务" --path ./projects/xxx --from 4
         """,
     )
-    parser.add_argument('task', help='任务描述（任何类型都可以）')
-    parser.add_argument('--path', '-p', default='./output',
-                        help='工作目录（默认 ./output）')
-    parser.add_argument('--from', dest='start_phase', type=int, default=1,
-                        metavar='N', help='从第 N 阶段开始（1-4，用于断点恢复）')
+    parser.add_argument('task', help='任务描述（任何类型）')
+    parser.add_argument('--path', '-p', default='./output', help='工作目录（默认 ./output）')
+    parser.add_argument('--from', dest='start_phase', type=int, default=1, metavar='N',
+                        help='从第 N 阶段开始，1=DISCOVER … 6=DELIVER（断点恢复用）')
 
     args = parser.parse_args()
+    cwd = Path(args.path).resolve()
+    start = max(0, args.start_phase - 1)
 
-    project_path = Path(args.path).resolve()
-    start = max(0, args.start_phase - 1)  # 转为 0-indexed
-
-    run(args.task, project_path, start_phase=start)
+    run(args.task, cwd, start_phase=start)
 
 
 if __name__ == '__main__':
