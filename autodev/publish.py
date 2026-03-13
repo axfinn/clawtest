@@ -140,13 +140,26 @@ def _serve_local_md(cwd: Path, port: int):
     def render_page(path: Path) -> str:
         text = path.read_text(encoding='utf-8')
         body = md_lib.markdown(text, extensions=['tables', 'fenced_code', 'toc'])
+        # mermaid / plantuml / d2 / dot 代码块 → 可渲染的 div
+        import re as _re
+        body = _re.sub(
+            r'<code class="language-mermaid">(.*?)</code>',
+            lambda m: f'<div class="mermaid">{m.group(1)}</div>',
+            body, flags=_re.DOTALL
+        )
         nav  = render_nav(path)
         title = path.stem
         return f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8"><title>{html.escape(title)}</title>
-<style>{_MD_CSS}</style></head><body>
+<style>{_MD_CSS}</style>
+</head><body>
 <nav><b>📁 {html.escape(cwd.name)}</b><br><br>{nav}</nav>
-<main>{body}</main></body></html>"""
+<main>{body}</main>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({{startOnLoad:true, theme:'default'}});
+</script>
+</body></html>"""
 
     def render_index() -> str:
         nav = render_nav(Path('/dev/null'))

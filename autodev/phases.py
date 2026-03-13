@@ -107,7 +107,22 @@ def phase_design(task: str, cwd: Path) -> str:
    - 选择理由（结合奥卡姆剃刀：哪个最简单有效）
 
    ## 架构/结构设计
-   - 整体结构（用 ASCII 图或列表描述）
+   - 整体结构**必须用图表工具**描述，禁止只用纯文字，优先选择以下工具：
+
+   **首选 Mermaid**（markdown 原生支持，渲染最方便）：
+   ```mermaid
+   graph TD
+       A[输入] --> B[处理] --> C[输出]
+   ```
+   类型: `graph`流程图 / `sequenceDiagram`时序 / `classDiagram`类图 /
+         `stateDiagram-v2`状态机 / `erDiagram` ER图 / `gantt`甘特图 / `pie`饼图
+
+   **备选工具**（Mermaid 表达不了时使用）：
+   - PlantUML: `@startuml ... @enduml`（复杂 UML）
+   - Graphviz DOT: `digraph G {{ ... }}`（复杂有向图）
+   - D2: 语法更简洁的现代图表语言
+   - ASCII art: 仅在极简场景兜底使用
+
    - 核心模块/步骤
 
    ## 执行计划
@@ -218,6 +233,13 @@ def phase_deliver(task: str, cwd: Path) -> str:
 
    ## 如何使用
    [使用说明、运行方式等]
+
+   ## 整体架构图
+   用图表工具画出最终方案的整体结构或核心流程（优先 Mermaid，复杂场景可用 PlantUML/D2/Graphviz）：
+   ```mermaid
+   graph LR
+       ...
+   ```
 
    ## 过程摘要
    - DISCOVER: [调研到的关键信息]
