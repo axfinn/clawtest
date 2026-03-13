@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""
+killport - 按端口号杀进程
+用法: killport <port> [port2 ...]
+      killport --list        列出所有占用端口的进程
+"""
+
+import sys
+import os
+import subprocess
+import signal
+
+
+def get_pids_by_port(port: int) -> list[tuple[int, str]]:
+    """返回占用该端口的 [(pid, cmdline), ...]"""
+    pids = []
+    try:
+        # lsof 方式（macOS / Linux 通用）
+        r = subprocess.run(
+            ['lsof', '-ti', f'tcp:{port}'],
+            capture_output=True, text=True
+        )
+        for line in r.stdout.strip().splitlines():
+            pid = int(line.strip())
+            cmd = _get_cmd(pid)
+            pids.append((pid, cmd))
+    except FileNotFoundError:
+        # lsof 不可用，用 ss（Linux）
+        try:
+            r = subprocess.run(
+                ['ss', '-tlnp', f'sport = :{port}'],
+                capture_output=True, text=True
+            )
+            for line in r.stdout.splitlines():
+                if 'pid=' in line:
+                    pid = int(line.split('pid=')[1].split(',')[0])
+                    pids.append((pid, _get_cmd(pid)))
+        except Exception:
+            pass
+    return pids
+
+
+def _get_cmd(pid: int) -> str:
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return f.read().replace(b'\x00', b' ').decode(errors='replace').strip()[:80]
+    except Exception:
+        try:
+            r = subprocess.run(['ps', '-p', str(pid), '-o', 'command='],
+                               capture_output=True, text=True)
+            return r.stdout.strip()[:80]
+        except Exception:
+            return '?'
+
+
+def kill_port(port: int, sig=signal.SIGTERM) -> bool:
+    pids = get_pids_by_port(port)
+    if not pids:
+        print(f'  :{port}  没有进程占用')
+        return False
+
+    killed = False
+    for pid, cmd in pids:
+        try:
+            os.kill(pid, sig)
+            print(f'  ✅ :{port}  kill -{sig.name} {pid}  {cmd}')
+            killed = True
+        except ProcessLookupError:
+            print(f'  ⚠️  :{port}  pid {pid} 已不存在')
+        except PermissionError:
+            print(f'  ❌ :{port}  pid {pid} 权限不足，尝试 sudo')
+    return killed
+
+
+def list_ports():
+    """列出所有监听端口及对应进程"""
+    try:
+        r = subprocess.run(
+            ['lsof', '-iTCP', '-sTCP:LISTEN', '-n', '-P'],
+            capture_output=True, text=True
+        )
+        lines = r.stdout.strip().splitlines()
+        if not lines:
+            print('  没有监听中的 TCP 端口')
+            return
+        print(f'  {"COMMAND":<20} {"PID":>6}  {"PORT":<10}')
+        print('  ' + '-' * 42)
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 9:
+                continue
+            cmd  = parts[0][:20]
+            pid  = parts[1]
+            addr = parts[8]
+            print(f'  {cmd:<20} {pid:>6}  {addr}')
+    except FileNotFoundError:
+        # Linux fallback: ss
+        r = subprocess.run(['ss', '-tlnp'], capture_output=True, text=True)
+        print(r.stdout)
+
+
+def main():
+    args = sys.argv[1:]
+
+    if not args or args[0] in ('-h', '--help'):
+        print(__doc__)
+        sys.exit(0)
+
+    if args[0] in ('-l', '--list'):
+        print('\n🔍 当前监听端口:')
+        list_ports()
+        return
+
+    force = '-f' in args or '--force' in args
+    args  = [a for a in args if a not in ('-f', '--force')]
+
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    label = 'SIGKILL(-9)' if force else 'SIGTERM(-15)'
+
+    print(f'\n🔫 killport  [{label}]')
+    for arg in args:
+        try:
+            port = int(arg)
+        except ValueError:
+            print(f'  ❌ 无效端口: {arg}')
+            continue
+        kill_port(port, sig)
+    print()
+
+
+if __name__ == '__main__':
+    main()
