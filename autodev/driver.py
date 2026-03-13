@@ -124,6 +124,13 @@ def run(task: str, cwd: Path, start_phase: int = 0,
     if start_phase == 0:
         clear_stop(cwd)
 
+    # DO 和 REVIEW 的索引（用于 DO→REVIEW 重试循环）
+    DO_IDX     = next(i for i, (l, _, _) in enumerate(PHASE_LIST) if 'DO' in l)
+    REVIEW_IDX = next(i for i, (l, _, _) in enumerate(PHASE_LIST) if 'REVIEW' in l)
+    MAX_RETRY  = 2   # REVIEW 失败后最多重试 DO+REVIEW 次数
+
+    retry_count = 0
+
     for i, (label, prompt_fn, timeout) in enumerate(PHASE_LIST):
         if i < start_phase:
             print(f"⏭  跳过: {label}")
@@ -143,6 +150,28 @@ def run(task: str, cwd: Path, start_phase: int = 0,
 
         if not ok:
             print(f"\n⚠️  [{label}] 执行异常，继续下一阶段...", flush=True)
+
+        # REVIEW 失败 → 自动重跑 DO + REVIEW（最多 MAX_RETRY 次）
+        if i == REVIEW_IDX and not ok and retry_count < MAX_RETRY:
+            retry_count += 1
+            print(f"\n🔄 REVIEW 未通过，重跑 DO + REVIEW（第 {retry_count}/{MAX_RETRY} 次）...", flush=True)
+
+            # 重跑 DO
+            do_label, do_fn, do_timeout = PHASE_LIST[DO_IDX]
+            do_prompt = do_fn(task, cwd)
+            do_ok = run_phase(do_prompt, cwd, f"DO retry-{retry_count}  {do_label}", do_timeout)
+            results[f"{do_label} (retry-{retry_count})"] = do_ok
+
+            # 重跑 REVIEW
+            rv_label, rv_fn, rv_timeout = PHASE_LIST[REVIEW_IDX]
+            rv_prompt = rv_fn(task, cwd)
+            ok = run_phase(rv_prompt, cwd, f"REVIEW retry-{retry_count}  {rv_label}", rv_timeout)
+            results[f"{rv_label} (retry-{retry_count})"] = ok
+
+            if ok:
+                print(f"\n✅ 第 {retry_count} 次重试后 REVIEW 通过", flush=True)
+            elif retry_count >= MAX_RETRY:
+                print(f"\n⚠️  已达最大重试次数 {MAX_RETRY}，继续交付...", flush=True)
 
     # 可选：编译构建
     if build:

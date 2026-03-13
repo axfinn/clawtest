@@ -179,11 +179,15 @@ def phase_review(task: str, cwd: Path) -> str:
 步骤：
 1. 读取 {cwd}/process/02-define.md 获取成功标准
 2. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
-3. 逐项验证成功标准：
-   - 代码 → 用 Bash 运行，查看输出
-   - 文档 → 通读全文，检查完整性
-4. 发现问题直接用 Edit/Bash 修复，修复后更新 05-review.md
-5. 迭代直到满足标准
+3. 循环验证（最多 3 轮）：
+   - 逐项检查成功标准：代码用 Bash 运行，文档通读检查
+   - 发现问题直接用 Edit/Bash 修复目标项目文件
+   - 修复后更新 05-review.md，再次验证
+   - 所有标准 ✅ 则结束循环
+4. 最终在 05-review.md 写明整体质量评估
+
+若发现需要大规模重写（超过 30% 的文件），在报告中注明"需要重跑 DO 阶段"，
+系统会自动重试。
 
 05-review.md 格式：
    # REVIEW - 审查报告
