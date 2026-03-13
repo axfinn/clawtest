@@ -3,8 +3,8 @@
 无监管万能任务助手。给它一句话需求，它自主完成并交付结果。
 
 ```bash
-./autodev "写一份 Redis 集群最佳实践文档" --publish
-./autodev "用 Go 实现一个 HTTP 文件服务器" --build
+./autodev "写一份 Redis 集群最佳实践文档" --publish --push --serve
+./autodev "用 Go 实现一个 HTTP 文件服务器" --build --push
 ./autodev "分析 sales.csv 找出增长趋势"
 ```
 
@@ -21,16 +21,18 @@ DISCOVER → DEFINE → DESIGN → DO → REVIEW → DELIVER
 | DISCOVER | WebSearch 调研 + 扫描现有文件 |
 | DEFINE | 追问 Why/What，明确成功标准 |
 | DESIGN | 选方案，写执行计划 |
-| DO | 全力执行，直接操作文件 |
-| REVIEW | 对照标准验证，发现问题直接修复 |
-| DELIVER | 生成 RESULT.md + git commit |
+| DO | 全力执行，直接操作文件（**自动注入匹配的本地 skills**） |
+| REVIEW | 对照标准验证，发现问题直接修复（自动注入 simplify 等 skills） |
+| DELIVER | 生成 RESULT.md + git commit（自动注入 live-dev/sync 等 skills） |
 
 可选扩展阶段（通过参数触发）：
 
 | 参数 | 阶段 | 说明 |
 |------|------|------|
 | `--build` | BUILD | 编译构建，生成二进制/产物 |
-| `--publish` | PUBLISH | 生成 MkDocs 文档站 + PDF |
+| `--publish` | PUBLISH | 生成 MkDocs 文档站 + PDF（**自动安装 mkdocs**） |
+| `--push` | — | 完成后无确认直接 `git push` 到远端 |
+| `--serve` | — | `--publish` 完成后自动启动本地预览服务器 |
 
 ## 安装
 
@@ -59,17 +61,69 @@ chmod +x autodev
 # 指定输出目录
 ./autodev "任务描述" --path ./output
 
-# 文档类任务 → 自动生成文档站 + PDF
+# 文档类任务 → 自动生成文档站（mkdocs 没装会自动安装）
 ./autodev "写 K8s 入门手册" --publish
 
-# 需要编译的项目 → 自动构建
+# 完成后预览文档（--serve 启动本地 http://127.0.0.1:8000）
+./autodev "写 K8s 入门手册" --publish --serve
+
+# 完成后直接推送到远端（无需确认）
+./autodev "任务描述" --push
+
+# 全家桶：文档 + 推送 + 预览
+./autodev "写 Redis 最佳实践" --publish --push --serve
+
+# 需要编译的项目
 ./autodev "用 Rust 写 CLI 工具" --build
 
 # 断点恢复（从第 4 阶段 DO 开始）
 ./autodev "任务描述" --path /tmp/autodev/xxx --from 4
+
+# 查看所有可用的本地 skills
+./autodev --list-skills
 ```
 
-## 输出
+## Skills 自动集成
+
+AutoDev 会自动扫描本地 Claude Code skills，在合适的阶段注入到 prompt 中。
+
+**Skills 来源**（按优先级，项目级覆盖全局）：
+```
+~/.claude/commands/*.md         # 全局 skills
+<project>/.claude/commands/*.md # 项目级 skills
+```
+
+**查看当前可用 skills：**
+```bash
+./autodev --list-skills
+```
+
+**工作原理：** DO / REVIEW / DELIVER 阶段会根据任务关键词自动匹配相关 skill，将 skill 内容追加到 prompt，让 claude 按 skill 规范执行。无需任何配置，把优秀的 skill 放到 `~/.claude/commands/` 即可自动生效。
+
+## 独立使用 publish 模块
+
+```bash
+# 对已有目录发布文档站（会自动安装 mkdocs）
+python3 publish.py --path /tmp/autodev/my-project --task "项目名"
+
+# 直接启动预览（跳过构建）
+python3 publish.py --path /tmp/autodev/my-project --serve
+
+# 自定义端口
+python3 publish.py --path /tmp/autodev/my-project --serve --port 9000
+```
+
+## 中断与恢复
+
+```bash
+# 另一个终端发送中断信号
+./autodev-stop /tmp/autodev/<项目名>
+
+# 从断点恢复
+./autodev "原始任务" --path /tmp/autodev/<项目名> --from 4
+```
+
+## 输出结构
 
 ```
 /tmp/autodev/<项目名>/
@@ -100,12 +154,14 @@ chmod +x autodev
 
 ```
 autodev/
-├── autodev      # Shell 入口（直接运行）
-├── driver.py    # 流程调度器
-├── runner.py    # Claude CLI 包装 + 日志
-├── phases.py    # 各阶段 Prompt
-├── build.py     # 编译构建模块
-└── publish.py   # 文档发布模块
+├── autodev       # Shell 入口（直接运行）
+├── driver.py     # 流程调度器
+├── runner.py     # Claude CLI 包装 + 日志
+├── phases.py     # 各阶段 Prompt（集成 skills 注入）
+├── skills.py     # Skills 自动发现、匹配、注入模块
+├── build.py      # 编译构建模块
+├── publish.py    # 文档发布模块（含 mkdocs 自动安装）
+└── autodev-stop  # 中断控制脚本
 ```
 
 ## 文档
