@@ -246,3 +246,10 @@ PHASE_LIST = [
     ("REVIEW   审查",  phase_review,   300),
     ("DELIVER  交付",  phase_deliver,  120),
 ]
+
+# 文档发布阶段（独立，由 --publish 标志触发）
+# 使用方式: from phases import phase_publish
+def phase_publish(task: str, cwd: Path) -> str:
+    """由 publish.py 独立管理，此处仅作占位引用"""
+    from publish import publish_prompt
+    return publish_prompt(task, cwd)
