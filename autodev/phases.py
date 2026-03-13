@@ -1,127 +1,99 @@
 """
-开发阶段定义
-每个阶段返回一个 prompt，告诉 Claude 直接用自己的工具完成任务
+阶段 Prompt 定义
+万能助手：不限于软件开发，任何任务都能自主完成
 """
 
 from pathlib import Path
 
 
-def phase_research(requirement: str, project_path: Path) -> str:
-    return f"""你是一个资深软件工程师，正在目录 {project_path} 下工作。
+def phase_understand(task: str, project_path: Path) -> str:
+    return f"""你是一个万能任务助手，工作目录是 {project_path}。
 
-需求: {requirement}
+用户任务: {task}
 
-请完成【调研阶段】：
-1. 用 WebSearch 搜索该需求的最佳实践、相关库、参考实现（至少搜索 2-3 次）
-2. 用 Glob 和 Read 分析目录下已有代码（如果有）
-3. 将调研结论写入 docs/00-RESEARCH.md，格式如下：
-   - 技术选型建议
-   - 相关开源项目/参考
-   - 实现思路
-   - 注意事项
+请完成【理解与调研阶段】：
+1. 分析这个任务的本质：是写代码？写文档？数据分析？内容创作？还是其他？
+2. 用 WebSearch 搜索相关背景知识、参考案例、最佳实践（至少搜索 2 次）
+3. 如果目录下已有文件，用 Glob + Read 读取理解现有内容
+4. 用 Write 工具将以下内容写入 process/01-understand.md：
+   - 任务理解（用自己的话重新描述任务目标）
+   - 调研发现（关键信息、参考资料）
+   - 执行计划（分几步完成，每步做什么）
+   - 预期产出（最终交付什么）
 
-直接用 Write/Edit 工具创建文件，不要只输出文字。
+直接用工具操作文件，不要只输出文字。
 """
 
 
-def phase_requirements(requirement: str, project_path: Path) -> str:
-    return f"""你是一个产品经理兼技术架构师，正在目录 {project_path} 下工作。
+def phase_execute(task: str, project_path: Path) -> str:
+    return f"""你是一个万能任务助手，工作目录是 {project_path}。
 
-需求: {requirement}
+用户任务: {task}
 
-请阅读 docs/00-RESEARCH.md（如果存在），然后完成【需求规格阶段】：
-用 Write 工具将完整需求规格文档写入 docs/01-REQUIREMENTS.md，包含：
-1. 项目概述
-2. 功能需求列表（用户故事格式）
-3. 非功能需求（性能、安全、兼容性）
-4. 验收标准
-5. 技术约束
+请先读取 process/01-understand.md 了解计划，然后完成【执行阶段】：
 
-直接用 Write 工具创建 docs/01-REQUIREMENTS.md 文件。
+根据任务类型选择合适的方式：
+- 如果是写代码 → 用 Write/Edit 工具创建完整可运行的代码文件
+- 如果是写文档/报告 → 用 Write 工具创建完整的 Markdown 文档
+- 如果是数据分析 → 用 Bash 运行分析，Write 保存结果
+- 如果是内容创作 → 用 Write 工具创建内容文件
+- 如果是配置/脚本 → 用 Write/Bash 完成
+
+要求：
+1. 产出完整可用的结果，不留占位符或 TODO
+2. 需要执行命令就用 Bash 工具（安装依赖、运行程序等）
+3. 需要联网查资料就用 WebSearch / WebFetch
+4. 所有产出文件放在 {project_path} 目录下
+
+完成后用 Write 工具将执行过程记录写入 process/02-execution.md。
 """
 
 
-def phase_design(requirement: str, project_path: Path) -> str:
-    return f"""你是一个软件架构师，正在目录 {project_path} 下工作。
+def phase_verify(task: str, project_path: Path) -> str:
+    return f"""你是一个严格的质量检查员，工作目录是 {project_path}。
 
-需求: {requirement}
+用户任务: {task}
 
-请阅读 docs/00-RESEARCH.md 和 docs/01-REQUIREMENTS.md，然后完成【技术方案阶段】：
-用 Write 工具将技术方案写入 docs/02-DESIGN.md，包含：
-1. 系统架构图（用 ASCII 或 Mermaid）
-2. 目录结构设计
-3. 核心模块说明
-4. 数据结构 / API 设计
-5. 关键技术点
+请读取所有产出文件，完成【验证阶段】：
+1. 对照任务目标检查产出是否完整、正确
+2. 如果是代码：用 Bash 工具运行/测试，修复发现的问题
+3. 如果是文档：检查内容完整性、准确性，直接用 Edit 补充不足之处
+4. 如果是其他：用适合的方式验证结果符合预期
+5. 直接修复问题，不要只列清单
 
-直接用 Write 工具创建 docs/02-DESIGN.md 文件。
+用 Write 工具将验证结果写入 process/03-verify.md：
+- 验证方式
+- 发现的问题及修复情况
+- 最终状态（通过/部分通过/说明）
 """
 
 
-def phase_implement(requirement: str, project_path: Path) -> str:
-    return f"""你是一个全栈工程师，正在目录 {project_path} 下工作。
+def phase_deliver(task: str, project_path: Path) -> str:
+    return f"""你是一个任务总结专家，工作目录是 {project_path}。
 
-需求: {requirement}
+用户任务: {task}
 
-请阅读所有 docs/ 下的文档，然后完成【代码实现阶段】：
-1. 先用 Glob/Read 检查目录下是否有已有代码，避免覆盖
-2. 按照 docs/02-DESIGN.md 的目录结构用 Write/Edit 工具创建所有代码文件
-3. 代码要求：
-   - 完整可运行，不留 TODO 占位
-   - 包含必要的错误处理
-   - 重要逻辑加简短注释
-4. 如需安装依赖，用 Bash 工具执行（pip install / npm install 等）
-5. 创建 README.md（如果不存在）
+请读取 process/ 下所有过程记录和产出文件，完成【交付阶段】：
+1. 用 Glob 列出所有产出文件
+2. 用 Write 工具创建 RESULT.md，包含：
+   ## 任务完成报告
+   - **任务**: {task}
+   - **产出文件**: 列出所有交付物及说明
+   - **完成情况**: 对每个目标的完成情况
+   - **使用说明**: 如何使用/查看产出（如有需要）
+   - **过程摘要**: 简述完成过程中的关键步骤
 
-直接用工具创建/修改文件，完成完整的代码实现。
+3. 用 Bash 执行 git init（如果不是 git 仓库）
+4. 用 Bash 执行 git add . 和 git commit -m "完成: {task[:50]}"
+
+最终 RESULT.md 就是给用户的交付报告。
 """
 
 
-def phase_test(requirement: str, project_path: Path) -> str:
-    return f"""你是一个测试工程师，正在目录 {project_path} 下工作。
-
-需求: {requirement}
-
-请读取已有代码文件，然后完成【测试阶段】：
-1. 用 Write 工具创建测试文件（tests/ 目录下）
-2. 用 Bash 工具尝试运行测试，查看结果
-3. 将测试计划写入 docs/03-TEST_PLAN.md：
-   - 测试用例列表
-   - 测试结果
-   - 已知问题
-
-如果测试失败，用 Edit 工具修复代码直到测试通过（或记录原因）。
-"""
-
-
-def phase_review(requirement: str, project_path: Path) -> str:
-    return f"""你是一个高级代码审查员，正在目录 {project_path} 下工作。
-
-需求: {requirement}
-
-请读取所有代码文件，完成【代码审查阶段】：
-1. 检查以下问题：
-   - 语法错误 / 逻辑漏洞
-   - 安全隐患（注入、越权等）
-   - 代码规范
-   - 是否符合需求
-2. 发现问题直接用 Edit 工具修复，不要只列问题
-3. 将审查报告写入 docs/04-REVIEW.md
-
-直接修复代码，不要只输出建议。
-"""
-
-
-def phase_commit(requirement: str, project_path: Path) -> str:
-    short = requirement[:50].replace('"', "'")
-    return f"""你正在目录 {project_path} 下工作。
-
-请完成【Git 提交阶段】：
-1. 用 Bash 工具检查 git 状态：git status
-2. 如果不是 git 仓库，先执行：git init
-3. 创建 .gitignore（如果不存在），排除 __pycache__、.venv、node_modules、*.log 等
-4. 执行：git add .
-5. 执行：git commit -m "feat: {short}"
-
-如果 git commit 失败，检查原因并解决后重试。
-"""
+# 阶段列表：供 driver.py 使用
+PHASE_LIST = [
+    ("理解与调研", phase_understand, 180),
+    ("执行任务",   phase_execute,   None),   # 不限时，任务可能很复杂
+    ("验证结果",   phase_verify,    300),
+    ("整理交付",   phase_deliver,   120),
+]
