@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from runner import run_phase
-from phases import PHASE_LIST
+from phases import PHASE_LIST, phase_ask, phase_extend
 from skills import list_skills
 from state import (
     mark_phase_start, mark_phase_done, mark_finished,
@@ -241,8 +241,124 @@ def run(task: str, cwd: Path, start_phase: int = 0,
 
 
 # ──────────────────────────────────────────────────────────────
+#  ask 子命令：在已有项目中持续追问 / 执行小任务
+# ──────────────────────────────────────────────────────────────
+
+def _next_qa_index(cwd: Path) -> int:
+    """读取 process/qa.md，返回下一个问答编号"""
+    qa_file = cwd / 'process' / 'qa.md'
+    if not qa_file.exists():
+        return 1
+    text = qa_file.read_text(encoding='utf-8')
+    import re as _re
+    indices = _re.findall(r'^## Q(\d+):', text, _re.MULTILINE)
+    return max((int(i) for i in indices), default=0) + 1
+
+
+def ask_project(question: str, cwd: Path):
+    """在已有项目目录中执行一次追问/追加任务"""
+    if not cwd.exists():
+        print(f"❌ 项目目录不存在: {cwd}", flush=True)
+        print(f"   请先用 autodev \"初始任务\" --path {cwd} 创建项目", flush=True)
+        return
+
+    qa_index = _next_qa_index(cwd)
+    (cwd / 'process').mkdir(parents=True, exist_ok=True)
+    (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"💬 AutoDev ask  持续追问模式", flush=True)
+    print(f"   项目: {cwd}", flush=True)
+    print(f"   问题 #{qa_index}: {question}", flush=True)
+    print(f"   问答记录: {cwd}/process/qa.md", flush=True)
+    print('='*60, flush=True)
+
+    prompt = phase_ask(question, cwd, qa_index)
+    ok = run_phase(prompt, cwd, f"ASK #{qa_index}", timeout=None)
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"   {'✅ 完成' if ok else '⚠️  异常'}", flush=True)
+    print(f"   问答记录: {cwd}/process/qa.md", flush=True)
+
+
+# ──────────────────────────────────────────────────────────────
+#  extend 子命令：在已有项目上追加新需求（自动迭代开发）
+# ──────────────────────────────────────────────────────────────
+
+def _next_iter_index(cwd: Path) -> int:
+    """返回下一个迭代编号"""
+    process_dir = cwd / 'process'
+    if not process_dir.exists():
+        return 1
+    import re as _re
+    max_n = 0
+    for p in process_dir.iterdir():
+        m = _re.match(r'^iter-(\d+)$', p.name)
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    return max_n + 1
+
+
+def extend_project(requirement: str, cwd: Path):
+    """在已有项目目录上追加新需求，走精简迭代流程"""
+    if not cwd.exists():
+        print(f"❌ 项目目录不存在: {cwd}", flush=True)
+        print(f"   请先用 autodev \"初始任务\" --path {cwd} 创建项目", flush=True)
+        return
+
+    iter_n = _next_iter_index(cwd)
+    iter_dir = cwd / 'process' / f'iter-{iter_n}'
+    iter_dir.mkdir(parents=True, exist_ok=True)
+    (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"🔄 AutoDev extend  迭代追加模式", flush=True)
+    print(f"   项目: {cwd}", flush=True)
+    print(f"   迭代: #{iter_n}", flush=True)
+    print(f"   新需求: {requirement}", flush=True)
+    print(f"   产出目录: {iter_dir}", flush=True)
+    print('='*60, flush=True)
+
+    # 记录本次迭代信息
+    st = load_state(cwd)
+    iters = st.get('iterations', [])
+    iters.append({'n': iter_n, 'requirement': requirement,
+                  'time': datetime.now().isoformat()})
+    st['iterations'] = iters
+    save_state(cwd, st)
+
+    prompt = phase_extend(requirement, cwd, iter_n)
+    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=None)
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"   {'✅ 迭代完成' if ok else '⚠️  迭代异常'}", flush=True)
+    print(f"   迭代产出: {iter_dir}/result.md", flush=True)
+    print(f"   主报告  : {cwd}/RESULT.md", flush=True)
+    print(f"   问答记录: {cwd}/process/qa.md", flush=True)
+
+
+# ──────────────────────────────────────────────────────────────
 #  入口
 # ──────────────────────────────────────────────────────────────
+
+def _spawn_bg_subcmd(subcmd: str, content: str, cwd: Path) -> None:
+    """后台运行 ask/extend 子命令"""
+    import subprocess as _sp
+    log_dir = cwd / '.autodev' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    bg_log = log_dir / f'bg-{subcmd}.log'
+    cmd = [sys.executable, __file__, subcmd, content, '--path', str(cwd)]
+    with open(bg_log, 'a') as log_f:
+        proc = _sp.Popen(cmd, stdin=_sp.DEVNULL, stdout=log_f, stderr=log_f,
+                         start_new_session=True,
+                         cwd=str(Path(__file__).parent))
+    print(f"🚀 后台启动 {subcmd} 成功")
+    print(f"   PID : {proc.pid}")
+    print(f"   内容: {content}")
+    print(f"   目录: {cwd}")
+    print(f"   日志: {bg_log}")
+    print(f"   实时查看: tail -f {bg_log}")
+
 
 def _spawn_background(args) -> None:
     """
@@ -294,14 +410,50 @@ def _spawn_background(args) -> None:
     print(f"   实时查看: tail -f {bg_log}")
 
 
+def _parse_subcmd(subcmd: str):
+    """解析 ask/extend 子命令：python3 driver.py <subcmd> "内容" [--path dir] [--bg]"""
+    sub = argparse.ArgumentParser(prog=f'autodev {subcmd}')
+    sub.add_argument('content', nargs='?', default='',
+                     help='问题或需求描述')
+    sub.add_argument('--path', '-p', default=None, help='项目目录（已有）')
+    sub.add_argument('--bg', action='store_true', help='后台运行')
+    return sub.parse_args(sys.argv[2:])
+
+
 def main():
+    # ── 子命令快速路由（在 argparse 主解析之前处理）──────────────
+    if len(sys.argv) >= 2 and sys.argv[1] == 'ask':
+        sub_args = _parse_subcmd('ask')
+        if not sub_args.content:
+            print("用法: autodev ask \"你的问题或任务\" --path ./project-dir")
+            return
+        cwd = Path(sub_args.path).resolve() if sub_args.path else Path.cwd()
+        if sub_args.bg:
+            # 后台运行 ask
+            _spawn_bg_subcmd('ask', sub_args.content, cwd)
+        else:
+            ask_project(sub_args.content, cwd)
+        return
+
+    if len(sys.argv) >= 2 and sys.argv[1] == 'extend':
+        sub_args = _parse_subcmd('extend')
+        if not sub_args.content:
+            print("用法: autodev extend \"新需求描述\" --path ./project-dir")
+            return
+        cwd = Path(sub_args.path).resolve() if sub_args.path else Path.cwd()
+        if sub_args.bg:
+            _spawn_bg_subcmd('extend', sub_args.content, cwd)
+        else:
+            extend_project(sub_args.content, cwd)
+        return
+
     parser = argparse.ArgumentParser(
         description='AutoDev - 万能任务助手（DISCOVER→DEFINE→DESIGN→DO→REVIEW→DELIVER）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 默认输出目录: /tmp/autodev/<任务名>-<时间戳>/
 
-示例:
+━━━ 基本用法 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # 不指定目录（自动命名）
   python3 driver.py "写 Redis 集群最佳实践文档" --publish
 
@@ -314,9 +466,23 @@ def main():
   # 断点恢复（从 DO 阶段重跑）
   python3 driver.py "任务" --path /tmp/autodev/xxx --from 4
 
-  # 对已有目录单独发布文档站
-  python3 publish.py --path /tmp/autodev/xxx --task "文档描述"
+━━━ 持续追问 (ask) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 在已有项目中追问/执行小任务（保留项目上下文）
+  python3 driver.py ask "帮我加单元测试" --path ./projects/auth
+  python3 driver.py ask "解释一下这里为什么用 JWT" --path ./projects/auth
+  python3 driver.py ask "给 login 接口加限流" --path ./projects/auth
 
+  # 所有问答自动追加到 process/qa.md，带编号和时间戳
+
+━━━ 迭代追加需求 (extend) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 在已有项目上追加新需求，自动走 DESIGN→DO→REVIEW→DELIVER
+  python3 driver.py extend "加 OAuth2 登录" --path ./projects/auth
+  python3 driver.py extend "支持多租户" --path ./projects/auth
+
+  # 每次迭代结果写入 process/iter-N/result.md
+  # 主报告 RESULT.md 自动追加本次迭代摘要
+
+━━━ 其他 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # 直接预览已有项目文档（serve 子命令）
   autodev serve --path /tmp/autodev/xxx
   autodev serve --path /tmp/autodev/xxx --port 9000

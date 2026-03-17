@@ -1,27 +1,154 @@
-# Claude Dev Assistant 🤖
+# AutoDev 🤖
 
-自驱开发工具 - 基于 Claude CLI 的智能开发助手
+万能任务助手 — 基于 Claude CLI，支持全流程自驱开发、持续追问和迭代加需求。
 
-## 功能
+---
 
-- ✅ 自动需求分析 → 代码生成 → 质量审查
-- ✅ 调用 Claude CLI (MiniMax API)
-- ✅ 检查点保存/恢复
-- ✅ 无限循环质量审查
+## 核心能力
 
-## 使用
+| 模式 | 命令 | 适合场景 |
+|------|------|---------|
+| **全流程开发** | `autodev "任务"` | 新项目，走完整 6 阶段 |
+| **持续追问** | `autodev ask "问题"` | 已有项目，追问/小任务 |
+| **迭代加需求** | `autodev extend "新需求"` | 已有项目，追加功能持续开发 |
+| **断点恢复** | `autodev "任务" --from N` | 某阶段失败后重跑 |
+| **文档发布** | `autodev "任务" --publish` | 生成 MkDocs 文档站 |
+
+---
+
+## 快速开始
+
+### 1. 全流程开发（新项目）
 
 ```bash
-# 开发新功能
-python3 -m claude_dev_assistant.driver develop "创建一个用户系统"
+# 自动生成目录（/tmp/autodev/<名称>-<时间戳>/）
+python3 autodev/driver.py "用 Flask 实现 JWT 认证"
 
-# 交互模式
-python3 -m claude_dev_assistant.driver interactive
+# 指定固定目录（便于后续追问/迭代）
+python3 autodev/driver.py "用 Flask 实现 JWT 认证" --path ./projects/auth
+
+# 后台运行，不怕终端断开
+python3 autodev/driver.py "任务描述" --path ./projects/myapp --bg
 ```
+
+流程：`DISCOVER → DEFINE → DESIGN → DO → REVIEW → DELIVER`
+
+---
+
+### 2. 持续追问（ask）
+
+在**已有项目目录**里追问问题或执行小任务，自动注入项目历史上下文。
+
+```bash
+# 追问问题
+python3 autodev/driver.py ask "这里为什么用 JWT 而不是 Session？" --path ./projects/auth
+
+# 执行小任务
+python3 autodev/driver.py ask "帮我加 login 接口的单元测试" --path ./projects/auth
+python3 autodev/driver.py ask "给 /api/user 加限流，每分钟 60 次" --path ./projects/auth
+
+# 后台执行
+python3 autodev/driver.py ask "优化数据库查询" --path ./projects/auth --bg
+```
+
+- 每次问答自动追加到 `process/qa.md`，带编号和时间戳
+- Claude 自动读取 `process/` 下的设计文档、执行记录作为背景
+
+---
+
+### 3. 迭代追加需求（extend）
+
+在**已有项目**上持续加新需求，自动走精简开发流程（DESIGN → DO → REVIEW → DELIVER）。
+
+```bash
+# 第一次迭代：加新功能
+python3 autodev/driver.py extend "加 OAuth2 Google 登录" --path ./projects/auth
+
+# 第二次迭代：继续加
+python3 autodev/driver.py extend "支持多租户，每个租户独立数据库" --path ./projects/auth
+
+# 第三次迭代
+python3 autodev/driver.py extend "加 Prometheus 监控接口" --path ./projects/auth
+```
+
+- 每次迭代结果写入 `process/iter-N/result.md`
+- 主报告 `RESULT.md` 自动追加本次迭代摘要
+- 最小改动原则：只改必须改的代码，不重构无关部分
+
+---
+
+### 4. 断点恢复
+
+```bash
+# 从第 4 阶段（DO）重跑
+python3 autodev/driver.py "任务" --path /tmp/autodev/xxx --from 4
+```
+
+阶段编号：1=DISCOVER，2=DEFINE，3=DESIGN，4=DO，5=REVIEW，6=DELIVER
+
+---
+
+### 5. 文档发布
+
+```bash
+# 生成 MkDocs 文档站
+python3 autodev/driver.py "任务" --path ./projects/myapp --publish
+
+# 预览文档
+python3 autodev/driver.py serve --path ./projects/myapp --port 8000
+```
+
+---
+
+## 项目目录结构
+
+运行后，每个项目目录的结构：
+
+```
+./projects/auth/
+├── RESULT.md              # 主交付报告（每次迭代自动追加）
+├── process/
+│   ├── 01-discover.md     # 调研结果
+│   ├── 02-define.md       # 问题定义
+│   ├── 03-design.md       # 架构设计
+│   ├── 04-do.md           # 执行记录
+│   ├── 05-review.md       # 质量审查
+│   ├── qa.md              # 所有追问记录（ask 命令追加）
+│   ├── iter-1/            # 第一次迭代（extend 命令）
+│   │   ├── design.md
+│   │   └── result.md
+│   └── iter-2/            # 第二次迭代
+│       ├── design.md
+│       └── result.md
+└── .autodev/
+    └── logs/              # 各阶段详细日志
+```
+
+---
+
+## 典型工作流
+
+```bash
+# 1. 启动项目
+python3 autodev/driver.py "用 Go 实现 Redis 分布式锁" --path ./projects/redis-lock
+
+# 2. 追问
+python3 autodev/driver.py ask "解释一下 Lua 脚本原子解锁的实现" --path ./projects/redis-lock
+python3 autodev/driver.py ask "帮我补全 benchmark 测试" --path ./projects/redis-lock
+
+# 3. 加新需求
+python3 autodev/driver.py extend "加看门狗自动续期功能" --path ./projects/redis-lock
+python3 autodev/driver.py extend "支持可重入锁" --path ./projects/redis-lock
+
+# 4. 发布文档
+python3 autodev/driver.py serve --path ./projects/redis-lock
+```
+
+---
 
 ## 配置
 
-Claude CLI 配置: `~/.claude/settings.json`
+Claude CLI 配置：`~/.claude/settings.json`
 
 ```json
 {
@@ -32,6 +159,8 @@ Claude CLI 配置: `~/.claude/settings.json`
   }
 }
 ```
+
+---
 
 ## License
 

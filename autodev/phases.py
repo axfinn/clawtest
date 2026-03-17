@@ -263,7 +263,139 @@ PHASE_LIST = [
     ("DELIVER  交付",  phase_deliver,  None),
 ]
 
+# ─────────────────────────────────────────────────────────────
+# Phase ASK  持续追问
+# ─────────────────────────────────────────────────────────────
+def phase_ask(question: str, cwd: Path, qa_index: int) -> str:
+    """
+    在已有项目上下文中回答/执行追问。
+    自动注入 process/ 下的既有文档作为背景，
+    结果追加写入 process/qa.md。
+    """
+    # 列出可用的上下文文件，供 prompt 中引用
+    context_files = []
+    for name in ['01-discover.md', '02-define.md', '03-design.md',
+                 '04-do.md', '05-review.md', 'RESULT.md']:
+        p = cwd / 'process' / name
+        if not p.exists() and name == 'RESULT.md':
+            p = cwd / 'RESULT.md'
+        if p.exists():
+            context_files.append(str(p))
+
+    context_hint = '\n'.join(f'   - {f}' for f in context_files) if context_files \
+        else '   （暂无，从头分析）'
+
+    base = f"""你是一个在持续对话中帮助完成具体任务的助手。
+
+项目目录: {cwd}
+本次问题 (#{qa_index}): {question}
+
+【ASK - 持续追问模式】
+
+可用的项目上下文文件（按需读取）：
+{context_hint}
+
+执行步骤：
+1. **读取上下文**：用 Read 读取上述相关文件，理解项目背景
+2. **回答/执行**：
+   - 如果是问题 → 给出清晰、有依据的回答
+   - 如果是任务 → 用 Write/Edit/Bash 直接执行，产出完整结果
+   - 如果是修改 → 基于已有代码/文档做增量修改
+3. **记录结果**：用 Edit/Write 将本次问答追加到 {cwd}/process/qa.md：
+
+   ## Q{qa_index}: {{question_summary}}
+   **时间**: {{timestamp}}
+   **问题**: {question}
+
+   **回答**:
+   {{详细回答或执行结果}}
+
+   **相关文件**: {{如有产出或修改}}
+
+   ---
+
+原则：
+- 直接给出结果，不要询问确认
+- 如需调研，用 WebSearch 自主搜索
+- 如需修改代码/文档，直接 Edit，不要只说"可以这样改"
+"""
+    return augment_prompt(base, question, project_root=cwd, phase_hint='do execute code write')
+
+
 # 以下两个阶段由独立模块管理，通过 driver.py 的可选标志触发
+
+def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
+    """
+    在已有项目上追加新需求，走精简流程：
+    DESIGN（增量）→ DO → REVIEW → DELIVER（追加）
+    结果写入 process/iter-N/ 子目录并更新 RESULT.md。
+    """
+    iter_dir = cwd / 'process' / f'iter-{iter_n}'
+
+    # 列出可用的历史上下文文件
+    ctx_files = []
+    for name in ['01-discover.md', '02-define.md', '03-design.md', 'RESULT.md']:
+        p = cwd / 'process' / name
+        if not p.exists() and name == 'RESULT.md':
+            p = cwd / 'RESULT.md'
+        if p.exists():
+            ctx_files.append(str(p))
+    # 上一次迭代的产出
+    prev_iter = cwd / 'process' / f'iter-{iter_n - 1}'
+    if prev_iter.exists():
+        ctx_files.append(str(prev_iter / 'result.md'))
+
+    context_hint = '\n'.join(f'   - {f}' for f in ctx_files) if ctx_files \
+        else '   （暂无历史上下文）'
+
+    base = f"""你是一个持续迭代开发的全能工程师。
+
+项目目录: {cwd}
+本次新需求 (迭代 #{iter_n}): {requirement}
+迭代产出目录: {iter_dir}
+
+【EXTEND - 迭代追加模式】
+
+已有项目上下文（读取后再开始）：
+{context_hint}
+
+执行步骤：
+1. **读取历史上下文**：用 Read 读取上述文件，理解项目现状和已有实现
+2. **增量设计**：基于现有架构，设计本次需求的实现方案，写入 {iter_dir}/design.md：
+   # 迭代 {iter_n} 设计
+   ## 新需求: {requirement}
+   ## 影响分析（哪些已有文件需要修改）
+   ## 实现方案（最小改动原则）
+   ## 执行步骤清单
+
+3. **执行开发**：
+   - 按设计方案修改/新增文件（Edit 已有文件，Write 新文件）
+   - 目标项目路径从历史上下文或任务描述中获取
+   - 产出完整可运行代码，不留 TODO / 占位符
+
+4. **自验证**：
+   - 用 Bash 运行测试/编译，验证改动无回归
+   - 发现问题直接修复
+
+5. **记录产出**：用 Write 将本次迭代结果写入 {iter_dir}/result.md：
+   # 迭代 {iter_n} 结果
+   ## 新需求: {requirement}
+   ## 完成的工作
+   ## 新增/修改的文件
+   ## 验证结果
+
+6. **更新主报告**：用 Edit 在 {cwd}/RESULT.md 末尾追加：
+   ## 迭代 {iter_n}: {requirement}
+   - 完成的工作摘要
+   - 新增/修改文件列表
+
+原则：
+- 最小改动原则：只改必须改的，不重构无关代码
+- 不要覆盖已有 process/ 文件（01~05），只写 iter-N/
+- 遇到问题主动解决，不要停下来询问
+"""
+    return augment_prompt(base, requirement, project_root=cwd, phase_hint='do execute code write')
+
 
 def phase_publish(task: str, cwd: Path) -> str:
     """--publish 触发，由 publish.py 管理"""
