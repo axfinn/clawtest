@@ -273,7 +273,8 @@ def ask_project(question: str, cwd: Path):
     print(f"   问答记录: {cwd}/process/qa.md", flush=True)
     print('='*60, flush=True)
 
-    prompt = phase_ask(question, cwd, qa_index)
+    prompt = phase_ask(question, cwd, qa_index,
+                       timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     ok = run_phase(prompt, cwd, f"ASK #{qa_index}", timeout=None)
 
     print(f"\n{'='*60}", flush=True)

@@ -14,6 +14,7 @@ AutoDev 阶段定义 - 基于哲学框架的通用问题解决方法论
   DELIVER:  汇总交付，写 RESULT.md + git commit
 """
 
+from datetime import datetime
 from pathlib import Path
 from skills import augment_prompt
 
@@ -266,7 +267,7 @@ PHASE_LIST = [
 # ─────────────────────────────────────────────────────────────
 # Phase ASK  持续追问
 # ─────────────────────────────────────────────────────────────
-def phase_ask(question: str, cwd: Path, qa_index: int) -> str:
+def phase_ask(question: str, cwd: Path, qa_index: int, timestamp: str = None) -> str:
     """
     在已有项目上下文中回答/执行追问。
     自动注入 process/ 下的既有文档作为背景，
@@ -284,6 +285,8 @@ def phase_ask(question: str, cwd: Path, qa_index: int) -> str:
 
     context_hint = '\n'.join(f'   - {f}' for f in context_files) if context_files \
         else '   （暂无，从头分析）'
+
+    ts = timestamp or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     base = f"""你是一个在持续对话中帮助完成具体任务的助手。
 
@@ -304,7 +307,7 @@ def phase_ask(question: str, cwd: Path, qa_index: int) -> str:
 3. **记录结果**：用 Edit/Write 将本次问答追加到 {cwd}/process/qa.md：
 
    ## Q{qa_index}: {{question_summary}}
-   **时间**: {{timestamp}}
+   **时间**: {ts}
    **问题**: {question}
 
    **回答**:
