@@ -16,6 +16,7 @@ from pathlib import Path
 from runner import run_phase
 from phases import PHASE_LIST, phase_ask, phase_extend
 from skills import list_skills
+from init import init_project
 from state import (
     mark_phase_start, mark_phase_done, mark_finished,
     last_completed_phase, should_stop, clear_stop, save_state, load_state,
@@ -423,6 +424,17 @@ def _parse_subcmd(subcmd: str):
 
 def main():
     # ── 子命令快速路由（在 argparse 主解析之前处理）──────────────
+
+    # `init` 子命令：扫描项目，生成 CLAUDE.md 锁定上下文
+    if len(sys.argv) >= 2 and sys.argv[1] == 'init':
+        import argparse as _ap
+        sub = _ap.ArgumentParser(prog='autodev init')
+        sub.add_argument('--path', '-p', default=None, help='项目目录')
+        sub_args = sub.parse_args(sys.argv[2:])
+        cwd = Path(sub_args.path).resolve() if sub_args.path else Path.cwd()
+        init_project(cwd)
+        return
+
     if len(sys.argv) >= 2 and sys.argv[1] == 'ask':
         sub_args = _parse_subcmd('ask')
         if not sub_args.content:

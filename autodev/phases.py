@@ -288,6 +288,18 @@ def phase_ask(question: str, cwd: Path, qa_index: int, timestamp: str = None) ->
 
     ts = timestamp or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    # 方案B：检测是否有 CLAUDE.md，有则注入约束
+    claude_md = cwd / 'CLAUDE.md'
+    if claude_md.exists():
+        init_hint = f"""⚠️ 本项目已执行 autodev init，存在 {claude_md}。
+**必须先用 Read 读取 {claude_md}**，其中包含：
+- 完整的技术栈和已安装依赖（禁止重复安装）
+- 项目文件列表（直接用，不要重新 Glob 扫描）
+- 过程文档摘要（不要重复 WebSearch 调研）"""
+    else:
+        init_hint = f"""提示：建议执行 `autodev init --path {cwd}` 生成项目上下文，
+可避免每次冷启动重复调研和安装依赖。"""
+
     base = f"""你是一个在持续对话中帮助完成具体任务的助手。
 
 项目目录: {cwd}
@@ -295,11 +307,13 @@ def phase_ask(question: str, cwd: Path, qa_index: int, timestamp: str = None) ->
 
 【ASK - 持续追问模式】
 
+{init_hint}
+
 可用的项目上下文文件（按需读取）：
 {context_hint}
 
 执行步骤：
-1. **读取上下文**：用 Read 读取上述相关文件，理解项目背景
+1. **读取上下文**：{'先读 CLAUDE.md，再按需读取以下文件' if claude_md.exists() else '用 Read 读取上述相关文件，理解项目背景'}
 2. **回答/执行**：
    - 如果是问题 → 给出清晰、有依据的回答
    - 如果是任务 → 用 Write/Edit/Bash 直接执行，产出完整结果
@@ -319,7 +333,8 @@ def phase_ask(question: str, cwd: Path, qa_index: int, timestamp: str = None) ->
 
 原则：
 - 直接给出结果，不要询问确认
-- 如需调研，用 WebSearch 自主搜索
+- **禁止重复安装依赖**（除非用户明确要求安装新包）
+- **禁止无谓调研**（除非用户明确要求查最新资料）
 - 如需修改代码/文档，直接 Edit，不要只说"可以这样改"
 """
     return augment_prompt(base, question, project_root=cwd, phase_hint='do execute code write')
@@ -351,6 +366,16 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
     context_hint = '\n'.join(f'   - {f}' for f in ctx_files) if ctx_files \
         else '   （暂无历史上下文）'
 
+    # 方案B：检测 CLAUDE.md
+    claude_md = cwd / 'CLAUDE.md'
+    if claude_md.exists():
+        init_hint = f"""⚠️ 本项目已执行 autodev init，存在 {claude_md}。
+**必须先用 Read 读取 {claude_md}**，其中包含技术栈、依赖、文件列表和过程摘要。
+- 禁止重复安装依赖（除非明确需要新包）
+- 禁止重复 WebSearch 调研（除非明确需要最新资料）"""
+    else:
+        init_hint = f"提示：建议执行 `autodev init --path {cwd}` 生成项目上下文。"
+
     base = f"""你是一个持续迭代开发的全能工程师。
 
 项目目录: {cwd}
@@ -358,6 +383,8 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
 迭代产出目录: {iter_dir}
 
 【EXTEND - 迭代追加模式】
+
+{init_hint}
 
 已有项目上下文（读取后再开始）：
 {context_hint}

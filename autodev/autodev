@@ -19,8 +19,8 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
-# serve/list-skills 子命令不需要 claude
-if [[ "$1" != "serve" && "$1" != "--list-skills" ]]; then
+# serve/list-skills/init 子命令不需要 claude
+if [[ "$1" != "serve" && "$1" != "--list-skills" && "$1" != "init" ]]; then
   if ! command -v claude &>/dev/null; then
     echo "❌ 需要 claude CLI，请先安装 Claude Code" >&2
     exit 1
