@@ -9,6 +9,7 @@
 | 模式 | 命令 | 适合场景 |
 |------|------|---------|
 | **全流程开发** | `autodev "任务"` | 新项目，走完整 6 阶段 |
+| **初始化上下文** | `autodev init` | 项目完成后执行，生成 CLAUDE.md 锁定上下文 |
 | **持续追问** | `autodev ask "问题"` | 已有项目，追问/小任务 |
 | **迭代加需求** | `autodev extend "新需求"` | 已有项目，追加功能持续开发 |
 | **断点恢复** | `autodev "任务" --from N` | 某阶段失败后重跑 |
@@ -56,9 +57,25 @@ python3 autodev/driver.py ask "优化数据库查询" --path ./projects/auth --b
 
 ---
 
-### 3. 迭代追加需求（extend）
+### 3. 初始化项目上下文（init）
 
-在**已有项目**上持续加新需求，自动走精简开发流程（DESIGN → DO → REVIEW → DELIVER）。
+项目完成（或任意时间）执行一次，扫描项目生成 `CLAUDE.md`，让后续 `ask`/`extend` 冷启动时直接有完整上下文，**避免每次重复调研和安装依赖**。
+
+```bash
+python3 autodev/driver.py init --path ./projects/auth
+```
+
+生成的 `CLAUDE.md` 包含：
+- 技术栈和已安装依赖（Claude 不会重复 `pip install` / `npm install`）
+- 项目文件列表（不重新 Glob 扫描）
+- `process/` 各阶段文档摘要（不重复 WebSearch 调研）
+- 迭代历史记录
+
+> 建议：每次 `extend` 后重跑一次 `init` 刷新文件列表和迭代记录。
+
+---
+
+### 4. 迭代追加需求（extend）
 
 ```bash
 # 第一次迭代：加新功能
@@ -77,7 +94,7 @@ python3 autodev/driver.py extend "加 Prometheus 监控接口" --path ./projects
 
 ---
 
-### 4. 断点恢复
+### 5. 断点恢复
 
 ```bash
 # 从第 4 阶段（DO）重跑
@@ -88,7 +105,7 @@ python3 autodev/driver.py "任务" --path /tmp/autodev/xxx --from 4
 
 ---
 
-### 5. 文档发布
+### 6. 文档发布
 
 ```bash
 # 生成 MkDocs 文档站
@@ -106,6 +123,7 @@ python3 autodev/driver.py serve --path ./projects/myapp --port 8000
 
 ```
 ./projects/auth/
+├── CLAUDE.md              # init 生成的项目上下文（冷启动用）
 ├── RESULT.md              # 主交付报告（每次迭代自动追加）
 ├── process/
 │   ├── 01-discover.md     # 调研结果
@@ -132,15 +150,19 @@ python3 autodev/driver.py serve --path ./projects/myapp --port 8000
 # 1. 启动项目
 python3 autodev/driver.py "用 Go 实现 Redis 分布式锁" --path ./projects/redis-lock
 
-# 2. 追问
+# 2. 初始化上下文（避免后续重复调研/安装依赖）
+python3 autodev/driver.py init --path ./projects/redis-lock
+
+# 3. 持续追问
 python3 autodev/driver.py ask "解释一下 Lua 脚本原子解锁的实现" --path ./projects/redis-lock
 python3 autodev/driver.py ask "帮我补全 benchmark 测试" --path ./projects/redis-lock
 
-# 3. 加新需求
+# 4. 加新需求
 python3 autodev/driver.py extend "加看门狗自动续期功能" --path ./projects/redis-lock
+python3 autodev/driver.py init --path ./projects/redis-lock  # 更新上下文
 python3 autodev/driver.py extend "支持可重入锁" --path ./projects/redis-lock
 
-# 4. 发布文档
+# 5. 发布文档
 python3 autodev/driver.py serve --path ./projects/redis-lock
 ```
 
