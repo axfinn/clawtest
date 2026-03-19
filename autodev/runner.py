@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 # 空闲超时：连续多少秒无输出视为挂起，强制退出
-IDLE_TIMEOUT = 360  # 秒
+IDLE_TIMEOUT = 600  # 秒（10分钟）
 
 
 def find_claude() -> Path:

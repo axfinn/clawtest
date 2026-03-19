@@ -330,7 +330,7 @@ def extend_project(requirement: str, cwd: Path):
     save_state(cwd, st)
 
     prompt = phase_extend(requirement, cwd, iter_n)
-    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=None)
+    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=1800)
 
     print(f"\n{'='*60}", flush=True)
     print(f"   {'✅ 迭代完成' if ok else '⚠️  迭代异常'}", flush=True)
