@@ -28,19 +28,30 @@ const autodevUID = 1001
 const autodevGID = 1001
 const autodevHome = "/home/autodev"
 
+// setSysProcCredential sets the credential on cmd only when running as root.
+// When not root (e.g. local dev), setuid is not permitted and must be skipped.
+func setSysProcCredential(cmd *exec.Cmd) {
+	if os.Getuid() == 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: autodevUID, Gid: autodevGID},
+		}
+	}
+}
+
 // AutoDevHandler handles autodev task operations
 type AutoDevHandler struct {
-	db            *models.DB
-	adminPassword string
-	autodevPath   string
+	db             *models.DB
+	adminPassword  string
+	autodevPath    string
 	stopScriptPath string
-	dataDir       string
-	mu            sync.RWMutex
-	processes     map[string]*exec.Cmd
+	dataDir        string
+	claudeHome     string // Override HOME for Claude Code (empty = auto-detect)
+	mu             sync.RWMutex
+	processes      map[string]*exec.Cmd
 }
 
 // NewAutoDevHandler creates a new AutoDevHandler
-func NewAutoDevHandler(db *models.DB, adminPassword, autodevPath, dataDir string) *AutoDevHandler {
+func NewAutoDevHandler(db *models.DB, adminPassword, autodevPath, dataDir, claudeHome string) *AutoDevHandler {
 	stopScript := filepath.Join(filepath.Dir(autodevPath), "autodev-stop")
 	if _, err := os.Stat(stopScript); err != nil {
 		// try /opt/clawtest/autodev/autodev-stop
@@ -52,10 +63,23 @@ func NewAutoDevHandler(db *models.DB, adminPassword, autodevPath, dataDir string
 		autodevPath:    autodevPath,
 		stopScriptPath: stopScript,
 		dataDir:        dataDir,
+		claudeHome:     claudeHome,
 		processes:      make(map[string]*exec.Cmd),
 	}
 	os.MkdirAll(dataDir, 0755)
 	return h
+}
+
+// resolveHome returns the HOME directory to use when running Claude Code.
+// Priority: explicit config > local user HOME > Docker default (/home/autodev).
+func (h *AutoDevHandler) resolveHome() string {
+	if h.claudeHome != "" {
+		return h.claudeHome
+	}
+	if os.Getuid() != 0 {
+		return os.Getenv("HOME")
+	}
+	return autodevHome
 }
 
 // Ask handles POST /api/autodev/ask — submit a quick Q&A request using `autodev ask`
@@ -279,6 +303,12 @@ func (h *AutoDevHandler) VerifyPassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// GetCapabilities handles GET /api/autodev/capabilities
+// Returns the system capability清单 (no password required)
+func (h *AutoDevHandler) GetCapabilities(c *gin.Context) {
+	c.JSON(http.StatusOK, models.GetCapabilities())
+}
+
 // Submit handles POST /api/autodev/tasks — start a new task or resume from breakpoint
 func (h *AutoDevHandler) Submit(c *gin.Context) {
 	var req struct {
@@ -323,6 +353,9 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 	if req.ResumeFrom > 0 && req.WorkDir != "" {
 		// Resume mode: reuse existing work dir
 		taskDir = req.WorkDir
+		if abs, err := filepath.Abs(taskDir); err == nil {
+			taskDir = abs
+		}
 		isResume = true
 		// clear STOP file if present so task can resume
 		stopFile := filepath.Join(taskDir, ".autodev", "STOP")
@@ -335,6 +368,12 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 			log.Printf("[AutoDev] Create task directory error: dataDir=%s, taskDir=%s, error=%v", h.dataDir, taskDir, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务目录失败: " + err.Error()})
 			return
+		}
+		// Convert to absolute path so driver.py receives an absolute --path argument.
+		// Without this, a relative taskDir combined with cmd.Dir=taskDir causes driver.py
+		// to resolve --path relative to its own cwd, creating a nested duplicate path.
+		if abs, err := filepath.Abs(taskDir); err == nil {
+			taskDir = abs
 		}
 		// Transfer ownership to non-root autodev user so it can create files without permission issues
 		os.Chown(taskDir, autodevUID, autodevGID)
@@ -732,16 +771,14 @@ func (h *AutoDevHandler) runTask(id, description, workDir string, publish, build
 
 	// Run as non-root user (uid 1001) so Claude Code allows --dangerously-skip-permissions.
 	// Replace HOME so Claude Code finds the non-root user's config.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: autodevUID, Gid: autodevGID},
-	}
+	setSysProcCredential(cmd)
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "HOME=") && !strings.HasPrefix(e, "UV_CACHE_DIR=") {
 			env = append(env, e)
 		}
 	}
-	env = append(env, "HOME="+autodevHome)
+	env = append(env, "HOME="+h.resolveHome())
 	env = append(env, "UV_CACHE_DIR=/tmp/uv-cache-autodev")
 	// Inject SSH key for git operations (e.g. cloning private GitHub repos)
 	if gitSSHCmd := h.gitSSHCommand(); gitSSHCmd != "" {
@@ -807,9 +844,7 @@ func (h *AutoDevHandler) runAskTask(id, description, workDir string) {
 	// Matches the new clawtest driver.py ask subcommand.
 	cmd := exec.Command(h.autodevPath, "ask", description, "--path", workDir)
 	cmd.Dir = workDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: autodevUID, Gid: autodevGID},
-	}
+	setSysProcCredential(cmd)
 	cmd.Env = h.buildEnv()
 	// Do NOT redirect stdout/stderr — runner.py writes all logs (including claude output)
 	// directly to .autodev/logs/driver.log and ask-N.log, which GetLogs already reads.
@@ -883,9 +918,7 @@ func (h *AutoDevHandler) runExtendTask(id, description, workDir string) {
 	// Matches the new clawtest driver.py extend subcommand.
 	cmd := exec.Command(h.autodevPath, "extend", description, "--path", workDir)
 	cmd.Dir = workDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: autodevUID, Gid: autodevGID},
-	}
+	setSysProcCredential(cmd)
 	cmd.Env = h.buildEnv()
 	// Do NOT redirect stdout/stderr — runner.py writes all logs (including claude output)
 	// directly to .autodev/logs/driver.log and extend-iter-N.log, which GetLogs already reads.
@@ -946,7 +979,7 @@ func (h *AutoDevHandler) buildEnv() []string {
 			env = append(env, e)
 		}
 	}
-	env = append(env, "HOME="+autodevHome)
+	env = append(env, "HOME="+h.resolveHome())
 	env = append(env, "UV_CACHE_DIR=/tmp/uv-cache-autodev")
 	// Inject SSH key for git operations
 	if gitSSHCmd := h.gitSSHCommand(); gitSSHCmd != "" {
@@ -981,9 +1014,7 @@ func (h *AutoDevHandler) runExportTask(id, description, workDir, exportFormat st
 	os.Chown(logDir, autodevUID, autodevGID)
 
 	// Set up environment
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: autodevUID, Gid: autodevGID},
-	}
+	setSysProcCredential(cmd)
 	cmd.Env = h.buildEnv()
 
 	h.mu.Lock()

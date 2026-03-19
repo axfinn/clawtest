@@ -1,0 +1,17 @@
+server:
+  port: "7991"
+  mode: "debug"
+
+security:
+  cors_origins:
+    - "*"
+
+autodev:
+  admin_password: ""   # 必填！通过环境变量 AUTODEV_PASSWORD 传入更安全
+  autodev_path: ""     # 必填！autodev 二进制路径
+  data_dir: "./data/autodev"
+  # claude_home: ""   # Claude Code 运行时的 HOME 目录（可选）
+  #   本地模式：留空，自动使用 $HOME（skills 开箱即用）
+  #   Docker 模式：设为挂载路径，如 /home/autodev
+  #     配合：docker run -v ~/.claude:/home/autodev/.claude ...
+  #   环境变量覆盖：CLAUDE_HOME

@@ -12,5 +12,7 @@ _pdf/
 
 # Web backend
 web/backend/clawweb
+web/backend/clawweb_test
+web/backend/config.yaml
 web/backend/data/
 web/frontend/node_modules/

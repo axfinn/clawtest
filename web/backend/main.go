@@ -52,7 +52,7 @@ func main() {
 	defer db.Close()
 
 	// 初始化 AutoDev Handler
-	autoDevHandler := handlers.NewAutoDevHandler(db, cfg.AutoDev.AdminPassword, cfg.AutoDev.AutodevPath, cfg.AutoDev.DataDir)
+	autoDevHandler := handlers.NewAutoDevHandler(db, cfg.AutoDev.AdminPassword, cfg.AutoDev.AutodevPath, cfg.AutoDev.DataDir, cfg.AutoDev.ClaudeHome)
 
 	// 创建 Gin 引擎
 	if cfg.Server.Mode == "release" {
@@ -76,6 +76,7 @@ func main() {
 		autodev := api.Group("/autodev")
 		{
 			autodev.POST("/verify", autoDevHandler.VerifyPassword)
+			autodev.GET("/capabilities", autoDevHandler.GetCapabilities)
 			autodev.POST("/tasks", autoDevHandler.Submit)
 			autodev.GET("/tasks", autoDevHandler.List)
 			autodev.GET("/projects", autoDevHandler.ListProjects)

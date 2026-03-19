@@ -300,3 +300,100 @@ func MarshalAutoDevOptions(opts AutoDevOptions) string {
 	b, _ := json.Marshal(opts)
 	return string(b)
 }
+
+// Capabilities represents the system capabilities exposed via GET /api/autodev/capabilities
+type Capabilities struct {
+	System      string                   `json:"system"`
+	Version     string                   `json:"version"`
+	TaskTypes   []string                 `json:"task_types"`
+	Capabilities map[string]CapabilitySet `json:"capabilities"`
+	Boundaries  Boundaries                `json:"boundaries"`
+}
+
+// CapabilitySet represents a group of related capabilities
+type CapabilitySet struct {
+	Label       string   `json:"label"`
+	Description string   `json:"description"`
+	Items       []string `json:"items"`
+}
+
+// Boundaries defines what the system cannot do or requires
+type Boundaries struct {
+	Cannot    []string `json:"cannot"`
+	Requires  []string `json:"requires"`
+}
+
+// GetCapabilities returns the static capability清单 for clawweb/AutoDev
+func GetCapabilities() *Capabilities {
+	return &Capabilities{
+		System:  "clawweb / AutoDev Web UI",
+		Version: "1.0.0",
+		TaskTypes: []string{
+			"develop",
+			"ask",
+			"extend",
+			"export",
+			"init",
+		},
+		Capabilities: map[string]CapabilitySet{
+			"task_management": {
+				Label:       "任务管理与执行",
+				Description: "提交和管理 AI Code Agent 任务",
+				Items: []string{
+					"develop - 全新项目开发",
+					"ask - 基于项目上下文问答",
+					"extend - 扩展已有项目",
+					"export - 导出任务产物",
+					"init - 初始化新项目",
+				},
+			},
+			"code_understanding": {
+				Label:       "代码理解与分析",
+				Description: "对给定代码库进行结构化分析",
+				Items: []string{
+					"扫描项目结构",
+					"分析代码架构",
+					"理解模块依赖",
+				},
+			},
+			"investigation": {
+				Label:       "外部知识调研",
+				Description: "通过搜索引擎获取外部参考信息",
+				Items: []string{
+					"WebSearch 搜索",
+					"最佳实践查找",
+					"技术方案调研",
+				},
+			},
+			"file_exploration": {
+				Label:       "文件与日志查看",
+				Description: "监控任务执行过程和结果",
+				Items: []string{
+					"实时日志读取",
+					"文件浏览",
+					"产物下载",
+				},
+			},
+			"system_admin": {
+				Label:       "系统配置管理",
+				Description: "管理工具链配置",
+				Items: []string{
+					"SSH Key 管理",
+					"Claude/Clawtest 版本",
+					"项目配置",
+				},
+			},
+		},
+		Boundaries: Boundaries{
+			Cannot: []string{
+				"DISCOVER 阶段禁止写实现代码",
+				"禁止修改目标项目文件（需明确授权）",
+				"禁止在需求不明确时自行决定实现方向",
+			},
+			Requires: []string{
+				"具体任务描述或目标代码库路径",
+				"如涉及基础设施（DB/Redis/MQ）需激活对应 Skill",
+			},
+		},
+	}
+}

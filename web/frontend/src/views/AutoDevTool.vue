@@ -45,6 +45,10 @@
         </el-badge>
       </div>
       <div class="flex items-center gap-2">
+        <el-button size="small" @click="capabilitiesVisible = true; loadCapabilities()" class="topbar-btn">
+          <el-icon><InfoFilled /></el-icon>
+          <span class="hidden sm:inline ml-1">能力</span>
+        </el-button>
         <el-button size="small" @click="claudeDrawerVisible = true" class="topbar-btn">
           <el-icon><SetUp /></el-icon>
           <span class="hidden sm:inline ml-1">Claude 管理</span>
@@ -339,7 +343,7 @@
           </div>
         </div>
 
-        <div v-else class="h-full flex flex-col">
+        <div v-else class="flex-1 min-h-0 flex flex-col">
 
           <!-- Task Header -->
           <div class="content-header">
@@ -545,7 +549,7 @@
                   <div v-else-if="loadingFile" class="empty-content">
                     <el-icon class="text-2xl text-purple-400 is-loading"><Loading /></el-icon>
                   </div>
-                  <div v-else class="h-full flex flex-col">
+                  <div v-else class="flex-1 min-h-0 flex flex-col">
                     <div class="result-toolbar">
                       <div class="flex items-center gap-2 min-w-0">
                         <span class="file-category-badge" :class="`badge--${activeCategoryName}`">{{ activeCategoryLabel }}</span>
@@ -629,6 +633,68 @@
       destroy-on-close
     >
       <div class="fullscreen-content markdown-view" v-html="fullscreenHtml" />
+    </el-dialog>
+
+    <!-- ===== Capabilities Dialog ===== -->
+    <el-dialog v-model="capabilitiesVisible" title="AutoDev AI 能力清单" width="640px" destroy-on-close>
+      <div v-if="loadingCapabilities" class="text-center py-8">
+        <el-icon class="is-loading text-purple-500 text-2xl"><Loading /></el-icon>
+        <p class="text-slate-400 text-sm mt-2">加载中...</p>
+      </div>
+      <div v-else-if="capabilitiesData" class="capabilities-content">
+        <!-- System Info -->
+        <div class="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700/50">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-purple-400 font-semibold">{{ capabilitiesData.system }}</span>
+            <el-tag size="small" type="info">{{ capabilitiesData.version }}</el-tag>
+          </div>
+          <p class="text-xs text-slate-400">
+            支持任务类型：
+            <el-tag v-for="t in capabilitiesData.task_types" :key="t" size="small" class="mx-0.5">{{ t }}</el-tag>
+          </p>
+        </div>
+
+        <!-- Capability Sets -->
+        <div class="space-y-3">
+          <div v-for="(cap, key) in capabilitiesData.capabilities" :key="key" class="capability-card">
+            <div class="flex items-start gap-2">
+              <el-icon class="text-purple-400 mt-0.5"><InfoFilled /></el-icon>
+              <div class="flex-1">
+                <h4 class="text-sm font-medium text-slate-200 mb-1">{{ cap.label }}</h4>
+                <p class="text-xs text-slate-400 mb-2">{{ cap.description }}</p>
+                <div class="flex flex-wrap gap-1">
+                  <el-tag v-for="item in cap.items" :key="item" size="small" type="info" class="capability-item-tag">
+                    {{ item }}
+                  </el-tag>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Boundaries -->
+        <div class="mt-4 p-3 bg-amber-900/20 rounded-lg border border-amber-700/30">
+          <h4 class="text-sm font-medium text-amber-400 mb-2 flex items-center gap-1">
+            <el-icon><WarningFilled /></el-icon>
+            能力边界
+          </h4>
+          <div v-if="capabilitiesData.boundaries?.cannot?.length" class="mb-2">
+            <p class="text-xs text-amber-300 mb-1">禁止：</p>
+            <ul class="text-xs text-slate-400 space-y-0.5 pl-4">
+              <li v-for="c in capabilitiesData.boundaries.cannot" :key="c">• {{ c }}</li>
+            </ul>
+          </div>
+          <div v-if="capabilitiesData.boundaries?.requires?.length">
+            <p class="text-xs text-amber-300 mb-1">要求：</p>
+            <ul class="text-xs text-slate-400 space-y-0.5 pl-4">
+              <li v-for="r in capabilitiesData.boundaries.requires" :key="r">• {{ r }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="capabilitiesVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <!-- ===== Claude 管理 Drawer ===== -->
@@ -1627,6 +1693,22 @@ function formatTime(t) {
   return new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// ---- Capabilities ----
+const capabilitiesVisible = ref(false)
+const capabilitiesData = ref(null)
+const loadingCapabilities = ref(false)
+
+async function loadCapabilities() {
+  if (capabilitiesData.value) return // already loaded
+  loadingCapabilities.value = true
+  try {
+    const res = await fetch(`${API_BASE}/capabilities`)
+    if (res.ok) capabilitiesData.value = await res.json()
+    else ElMessage.error('获取能力清单失败')
+  } catch { ElMessage.error('网络错误') }
+  finally { loadingCapabilities.value = false }
+}
+
 // ---- Claude version management ----
 const claudeDrawerVisible = ref(false)
 const claudeInfo = ref(null)
@@ -1993,8 +2075,9 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
   background: #0f172a;
+  min-height: 0;
 }
 
 .content-header {
@@ -2121,6 +2204,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -2162,7 +2246,8 @@ onUnmounted(() => {
 
 .tab-content {
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }
@@ -2184,7 +2269,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
+  overflow: auto;
 }
 
 .result-toolbar {
@@ -2202,6 +2288,7 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 24px 32px;
   flex: 1;
+  min-height: 0;
   color: #e2e8f0;
   font-size: 15px;
   line-height: 1.7;
@@ -2326,7 +2413,7 @@ onUnmounted(() => {
 .files-layout {
   display: flex;
   flex: 1;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .file-tree {
@@ -2455,7 +2542,7 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
   min-width: 0;
 }
 
@@ -2486,6 +2573,7 @@ onUnmounted(() => {
 
 .log-terminal {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 16px;
   background: #020617;
@@ -2512,6 +2600,16 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 .init-log-line { color: #94a3b8; white-space: pre-wrap; word-break: break-all; }
+
+/* ===== Capabilities Dialog ===== */
+.capabilities-content { max-height: 60vh; overflow-y: auto; }
+.capability-card {
+  padding: 12px;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 8px;
+}
+.capability-item-tag { font-size: 11px; }
 
 /* ===== Fullscreen Dialog ===== */
 .fullscreen-dialog :deep(.el-dialog__body) {
