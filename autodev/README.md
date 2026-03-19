@@ -188,3 +188,6 @@ autodev/
 - [架构说明](docs/architecture.md)
 - [阶段详解](docs/phases.md)
 - [日志说明](docs/logs.md)
+- [断点恢复与终止](docs/resume-stop.md)
+- [Skills 自动集成](docs/skills.md)
+- [Web UI 部署](../web/README.md)
