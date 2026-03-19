@@ -14,6 +14,7 @@
 | **迭代加需求** | `autodev extend "新需求"` | 已有项目，追加功能持续开发 |
 | **断点恢复** | `autodev "任务" --from N` | 某阶段失败后重跑 |
 | **文档发布** | `autodev "任务" --publish` | 生成 MkDocs 文档站 |
+| **Web UI** | `./clawweb` | 浏览器图形化管理任务 |
 
 ---
 
@@ -165,6 +166,61 @@ python3 autodev/driver.py extend "支持可重入锁" --path ./projects/redis-lo
 # 5. 发布文档
 python3 autodev/driver.py serve --path ./projects/redis-lock
 ```
+
+---
+
+## Web UI
+
+项目包含一个 Web UI（clawweb），提供图形化界面管理 autodev 任务。
+
+### 目录结构
+
+```
+web/
+├── backend/              # Go + Gin 后端
+│   ├── main.go          # 入口
+│   ├── handlers/        # HTTP 处理函数
+│   ├── models/          # 数据模型和 SQLite
+│   ├── config/          # 配置加载
+│   ├── middleware/      # 中间件
+│   ├── static/          # 编译后的前端资源
+│   ├── go.mod
+│   └── clawweb          # 编译好的二进制（已排除在版本控制外）
+└── frontend/            # Vue 3 + Vite 前端源码
+    ├── src/
+    │   ├── views/AutoDevTool.vue
+    │   ├── composables/
+    │   └── router/
+    ├── package.json
+    └── vite.config.js
+```
+
+### 启动后端
+
+```bash
+cd web/backend
+go build -o clawweb .
+./clawweb
+# 默认监听 0.0.0.0:7991
+```
+
+环境变量：
+- `PORT`：监听端口（默认 7991）
+- `CONFIG_PATH`：配置文件路径（默认 ./config.yaml）
+- `DB_PATH`：SQLite 数据库路径（默认 ./data/autodev.db）
+
+### 前端开发
+
+```bash
+cd web/frontend
+npm install
+npm run dev      # 开发模式
+npm run build    # 生产构建（输出到 ../backend/static/）
+```
+
+### 访问
+
+启动后端后，访问 `http://<主机IP>:7991/static/` 使用 Web UI。
 
 ---
 
