@@ -13,7 +13,7 @@ AutoDev Build - 构建模块
 
 import sys
 from pathlib import Path
-from runner import run_phase
+from runner import CC_MODULE, normalize_module, run_phase
 
 
 def build_prompt(task: str, cwd: Path) -> str:
@@ -131,10 +131,11 @@ find {cwd} -name "*.so" -o -name "*.a" -o -name "*.whl" \
 """
 
 
-def build(task: str, cwd: Path) -> bool:
+def build(task: str, cwd: Path, module: str = CC_MODULE) -> bool:
     """执行构建阶段"""
+    module = normalize_module(module)
     prompt = build_prompt(task, cwd)
-    return run_phase(prompt, cwd, "BUILD  编译构建", timeout=600)
+    return run_phase(prompt, cwd, "BUILD  编译构建", timeout=600, module=module)
 
 
 def main():
@@ -150,6 +151,8 @@ def main():
     )
     parser.add_argument('--path', '-p', required=True, help='项目目录')
     parser.add_argument('--task', '-t', default='项目构建', help='任务/项目描述')
+    parser.add_argument('--module', choices=['cc', 'codex'], default=CC_MODULE,
+                        help='执行模块（默认: cc）')
     args = parser.parse_args()
 
     cwd = Path(args.path).resolve()
@@ -157,7 +160,7 @@ def main():
         print(f"❌ 目录不存在: {cwd}", file=sys.stderr)
         sys.exit(1)
 
-    ok = build(args.task, cwd)
+    ok = build(args.task, cwd, module=normalize_module(args.module))
     sys.exit(0 if ok else 1)
 
 

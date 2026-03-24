@@ -7,6 +7,7 @@
 #   ./autodev "用 Go 写一个 HTTP 文件服务器" --path ./projects/fileserver --build
 #   ./autodev "分析 sales.csv 找出增长趋势"
 #   ./autodev "任务" --path /tmp/myproject --from 4   # 断点恢复
+#   ./autodev "给现有项目补测试" --module codex
 
 set -e
 
@@ -19,11 +20,54 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
-# serve/list-skills/init 子命令不需要 claude
-if [[ "$1" != "serve" && "$1" != "--list-skills" && "$1" != "init" ]]; then
-  if ! command -v claude &>/dev/null; then
-    echo "❌ 需要 claude CLI，请先安装 Claude Code" >&2
-    exit 1
+resolve_module() {
+  local module="cc"
+  local expect_value=0
+  for arg in "$@"; do
+    if [[ "$expect_value" == "1" ]]; then
+      module="$arg"
+      expect_value=0
+      continue
+    fi
+    case "$arg" in
+      --module)
+        expect_value=1
+        ;;
+      --module=*)
+        module="${arg#--module=}"
+        ;;
+    esac
+  done
+  if [[ "$module" == "codex" ]]; then
+    echo "codex"
+  else
+    echo "cc"
+  fi
+}
+
+needs_runtime_check=1
+for arg in "$@"; do
+  if [[ "$arg" == "--list-skills" || "$arg" == "-h" || "$arg" == "--help" ]]; then
+    needs_runtime_check=0
+    break
+  fi
+done
+if [[ "$1" == "serve" || "$1" == "init" ]]; then
+  needs_runtime_check=0
+fi
+
+if [[ "$needs_runtime_check" == "1" ]]; then
+  MODULE="$(resolve_module "$@")"
+  if [[ "$MODULE" == "codex" ]]; then
+    if ! command -v codex &>/dev/null; then
+      echo "❌ 需要 codex CLI，请先安装 Codex" >&2
+      exit 1
+    fi
+  else
+    if ! command -v claude &>/dev/null; then
+      echo "❌ 需要 claude CLI，请先安装 Claude Code" >&2
+      exit 1
+    fi
   fi
 fi
 

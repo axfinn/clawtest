@@ -13,7 +13,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from runner import run_phase
+from runner import CC_MODULE, normalize_module, run_phase, runtime_display_name
 from phases import PHASE_LIST, phase_ask, phase_extend
 from skills import list_skills
 from init import init_project
@@ -92,7 +92,10 @@ def write_session_log(cwd: Path, task: str, phases_run: list, results: dict):
 
 def run(task: str, cwd: Path, start_phase: int = 0,
         publish: bool = False, build: bool = False,
-        push: bool = False, serve: bool = False):
+        push: bool = False, serve: bool = False,
+        module: str = CC_MODULE):
+    module = normalize_module(module)
+
     cwd.mkdir(parents=True, exist_ok=True)
     (cwd / 'process').mkdir(exist_ok=True)
     (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
@@ -109,6 +112,7 @@ def run(task: str, cwd: Path, start_phase: int = 0,
     print(f"   任务: {task}")
     print(f"   目录: {cwd}")
     print(f"   日志: {cwd / '.autodev' / 'logs'}")
+    print(f"   模块: {runtime_display_name(module)} ({module})")
     print(f"   时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   流程: {phases_str}")
     print('='*60)
@@ -145,7 +149,7 @@ def run(task: str, cwd: Path, start_phase: int = 0,
 
         mark_phase_start(cwd, i, label)
         prompt = prompt_fn(task, cwd)
-        ok = run_phase(prompt, cwd, f"{i+1}/{total}  {label}", timeout)
+        ok = run_phase(prompt, cwd, f"{i+1}/{total}  {label}", timeout, module=module)
         mark_phase_done(cwd, i, ok)
         results[label] = ok
 
@@ -160,13 +164,13 @@ def run(task: str, cwd: Path, start_phase: int = 0,
             # 重跑 DO
             do_label, do_fn, do_timeout = PHASE_LIST[DO_IDX]
             do_prompt = do_fn(task, cwd)
-            do_ok = run_phase(do_prompt, cwd, f"DO retry-{retry_count}  {do_label}", do_timeout)
+            do_ok = run_phase(do_prompt, cwd, f"DO retry-{retry_count}  {do_label}", do_timeout, module=module)
             results[f"{do_label} (retry-{retry_count})"] = do_ok
 
             # 重跑 REVIEW
             rv_label, rv_fn, rv_timeout = PHASE_LIST[REVIEW_IDX]
             rv_prompt = rv_fn(task, cwd)
-            ok = run_phase(rv_prompt, cwd, f"REVIEW retry-{retry_count}  {rv_label}", rv_timeout)
+            ok = run_phase(rv_prompt, cwd, f"REVIEW retry-{retry_count}  {rv_label}", rv_timeout, module=module)
             results[f"{rv_label} (retry-{retry_count})"] = ok
 
             if ok:
@@ -177,13 +181,13 @@ def run(task: str, cwd: Path, start_phase: int = 0,
     # 可选：编译构建
     if build:
         from build import build as do_build
-        ok = do_build(task, cwd)
+        ok = do_build(task, cwd, module=module)
         results["BUILD 编译构建"] = ok
 
     # 可选：文档发布
     if publish:
         from publish import publish as do_publish
-        ok = do_publish(task, cwd)
+        ok = do_publish(task, cwd, module=module)
         results["PUBLISH 文档发布"] = ok
 
     # 可选：推送到远端（无需确认）
@@ -256,12 +260,14 @@ def _next_qa_index(cwd: Path) -> int:
     return max((int(i) for i in indices), default=0) + 1
 
 
-def ask_project(question: str, cwd: Path):
+def ask_project(question: str, cwd: Path, module: str = CC_MODULE):
     """在已有项目目录中执行一次追问/追加任务"""
     if not cwd.exists():
         print(f"❌ 项目目录不存在: {cwd}", flush=True)
         print(f"   请先用 autodev \"初始任务\" --path {cwd} 创建项目", flush=True)
         return
+
+    module = normalize_module(module)
 
     qa_index = _next_qa_index(cwd)
     (cwd / 'process').mkdir(parents=True, exist_ok=True)
@@ -272,11 +278,12 @@ def ask_project(question: str, cwd: Path):
     print(f"   项目: {cwd}", flush=True)
     print(f"   问题 #{qa_index}: {question}", flush=True)
     print(f"   问答记录: {cwd}/process/qa.md", flush=True)
+    print(f"   模块: {runtime_display_name(module)} ({module})", flush=True)
     print('='*60, flush=True)
 
     prompt = phase_ask(question, cwd, qa_index,
                        timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    ok = run_phase(prompt, cwd, f"ASK #{qa_index}", timeout=None)
+    ok = run_phase(prompt, cwd, f"ASK #{qa_index}", timeout=None, module=module)
 
     print(f"\n{'='*60}", flush=True)
     print(f"   {'✅ 完成' if ok else '⚠️  异常'}", flush=True)
@@ -301,12 +308,14 @@ def _next_iter_index(cwd: Path) -> int:
     return max_n + 1
 
 
-def extend_project(requirement: str, cwd: Path):
+def extend_project(requirement: str, cwd: Path, module: str = CC_MODULE):
     """在已有项目目录上追加新需求，走精简迭代流程"""
     if not cwd.exists():
         print(f"❌ 项目目录不存在: {cwd}", flush=True)
         print(f"   请先用 autodev \"初始任务\" --path {cwd} 创建项目", flush=True)
         return
+
+    module = normalize_module(module)
 
     iter_n = _next_iter_index(cwd)
     iter_dir = cwd / 'process' / f'iter-{iter_n}'
@@ -319,6 +328,7 @@ def extend_project(requirement: str, cwd: Path):
     print(f"   迭代: #{iter_n}", flush=True)
     print(f"   新需求: {requirement}", flush=True)
     print(f"   产出目录: {iter_dir}", flush=True)
+    print(f"   模块: {runtime_display_name(module)} ({module})", flush=True)
     print('='*60, flush=True)
 
     # 记录本次迭代信息
@@ -330,7 +340,7 @@ def extend_project(requirement: str, cwd: Path):
     save_state(cwd, st)
 
     prompt = phase_extend(requirement, cwd, iter_n)
-    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=1800)
+    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=1800, module=module)
 
     print(f"\n{'='*60}", flush=True)
     print(f"   {'✅ 迭代完成' if ok else '⚠️  迭代异常'}", flush=True)
@@ -343,13 +353,14 @@ def extend_project(requirement: str, cwd: Path):
 #  入口
 # ──────────────────────────────────────────────────────────────
 
-def _spawn_bg_subcmd(subcmd: str, content: str, cwd: Path) -> None:
+def _spawn_bg_subcmd(subcmd: str, content: str, cwd: Path, module: str = CC_MODULE) -> None:
     """后台运行 ask/extend 子命令"""
     import subprocess as _sp
     log_dir = cwd / '.autodev' / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     bg_log = log_dir / f'bg-{subcmd}.log'
-    cmd = [sys.executable, __file__, subcmd, content, '--path', str(cwd)]
+    module = normalize_module(module)
+    cmd = [sys.executable, __file__, subcmd, content, '--path', str(cwd), '--module', module]
     with open(bg_log, 'a') as log_f:
         proc = _sp.Popen(cmd, stdin=_sp.DEVNULL, stdout=log_f, stderr=log_f,
                          start_new_session=True,
@@ -384,6 +395,7 @@ def _spawn_background(args) -> None:
     # 重新组装命令行（去掉 --bg，加上 --path 固定目录）
     cmd = [sys.executable, __file__]
     cmd += ['--path', str(cwd_path)]
+    cmd += ['--module', normalize_module(getattr(args, 'module', CC_MODULE))]
     if args.task:
         cmd += [args.task]
     if args.start_phase and args.start_phase != 1:
@@ -418,6 +430,8 @@ def _parse_subcmd(subcmd: str):
     sub.add_argument('content', nargs='?', default='',
                      help='问题或需求描述')
     sub.add_argument('--path', '-p', default=None, help='项目目录（已有）')
+    sub.add_argument('--module', choices=['cc', 'codex'], default=CC_MODULE,
+                     help='执行模块（默认: cc）')
     sub.add_argument('--bg', action='store_true', help='后台运行')
     return sub.parse_args(sys.argv[2:])
 
@@ -443,9 +457,9 @@ def main():
         cwd = Path(sub_args.path).resolve() if sub_args.path else Path.cwd()
         if sub_args.bg:
             # 后台运行 ask
-            _spawn_bg_subcmd('ask', sub_args.content, cwd)
+            _spawn_bg_subcmd('ask', sub_args.content, cwd, module=sub_args.module)
         else:
-            ask_project(sub_args.content, cwd)
+            ask_project(sub_args.content, cwd, module=sub_args.module)
         return
 
     if len(sys.argv) >= 2 and sys.argv[1] == 'extend':
@@ -455,9 +469,9 @@ def main():
             return
         cwd = Path(sub_args.path).resolve() if sub_args.path else Path.cwd()
         if sub_args.bg:
-            _spawn_bg_subcmd('extend', sub_args.content, cwd)
+            _spawn_bg_subcmd('extend', sub_args.content, cwd, module=sub_args.module)
         else:
-            extend_project(sub_args.content, cwd)
+            extend_project(sub_args.content, cwd, module=sub_args.module)
         return
 
     parser = argparse.ArgumentParser(
@@ -504,6 +518,8 @@ def main():
     parser.add_argument('task', nargs='?', default='', help='任务描述（任何类型）')
     parser.add_argument('--path', '-p', default=None,
                         help='工作目录（默认自动生成 /tmp/autodev/<名称>/）')
+    parser.add_argument('--module', choices=['cc', 'codex'], default=CC_MODULE,
+                        help='执行模块（默认: cc）')
     parser.add_argument('--from', dest='start_phase', type=int, default=1, metavar='N',
                         help='从第 N 阶段开始，1=DISCOVER … 6=DELIVER（断点恢复用）')
     parser.add_argument('--list-skills', action='store_true',
@@ -524,6 +540,7 @@ def main():
                         help='后台运行（自动 setsid + 日志重定向，无需 nohup &）')
 
     args = parser.parse_args()
+    args.module = normalize_module(getattr(args, "module", CC_MODULE))
 
     # --bg: 后台独立进程运行，防止终端断开导致任务中断
     if getattr(args, 'bg', False):
@@ -567,7 +584,7 @@ def main():
 
     start = max(0, args.start_phase - 1)
     run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish,
-        push=args.push, serve=args.serve)
+        push=args.push, serve=args.serve, module=args.module)
 
 
 if __name__ == '__main__':

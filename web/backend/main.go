@@ -101,8 +101,13 @@ func main() {
 			autodev.POST("/sshkey/regenerate", autoDevHandler.RegenerateSSHKey)
 
 			autodev.GET("/claude/version", autoDevHandler.GetClaudeVersion)
+			autodev.GET("/claude/cli/test", autoDevHandler.TestClaudeCLI)
 			autodev.GET("/claude/test", autoDevHandler.TestModel)
 			autodev.GET("/claude/update/stream", autoDevHandler.UpdateClaude)
+
+			autodev.GET("/codex/version", autoDevHandler.GetCodexVersion)
+			autodev.GET("/codex/cli/test", autoDevHandler.TestCodexCLI)
+			autodev.GET("/codex/update/stream", autoDevHandler.UpdateCodex)
 
 			autodev.GET("/clawtest/version", autoDevHandler.GetClawtestVersion)
 			autodev.GET("/clawtest/update/stream", autoDevHandler.UpdateClawtest)

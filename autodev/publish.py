@@ -15,7 +15,7 @@ import sys
 import os
 import shutil
 from pathlib import Path
-from runner import run_phase
+from runner import CC_MODULE, normalize_module, run_phase
 
 
 # ──────────────────────────────────────────────────────────────
@@ -443,13 +443,14 @@ echo "============================================"
 """
 
 
-def publish(task: str, cwd: Path) -> bool:
+def publish(task: str, cwd: Path, module: str = CC_MODULE) -> bool:
     """发布文档站（自动保障 mkdocs 环境）"""
     print("\n🔧 检查 mkdocs 环境...", flush=True)
     if not ensure_mkdocs():
         return False
+    module = normalize_module(module)
     prompt = publish_prompt(task, cwd)
-    return run_phase(prompt, cwd, "PUBLISH  文档发布", timeout=300)
+    return run_phase(prompt, cwd, "PUBLISH  文档发布", timeout=300, module=module)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -471,6 +472,8 @@ def main():
     )
     parser.add_argument('--path', '-p', required=True, help='文档目录')
     parser.add_argument('--task', '-t', default='文档', help='任务/文档描述')
+    parser.add_argument('--module', choices=['cc', 'codex'], default=CC_MODULE,
+                        help='执行模块（默认: cc）')
     parser.add_argument('--serve', '-s', action='store_true',
                         help='直接启动本地预览服务器（跳过构建）')
     parser.add_argument('--port', type=int, default=8000, help='预览端口（默认 8000）')
@@ -485,7 +488,7 @@ def main():
         serve(cwd, port=args.port)
         return
 
-    ok = publish(args.task, cwd)
+    ok = publish(args.task, cwd, module=normalize_module(args.module))
     sys.exit(0 if ok else 1)
 
 

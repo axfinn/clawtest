@@ -3,6 +3,7 @@ package handlers
 import (
 	"archive/zip"
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -88,6 +89,7 @@ func (h *AutoDevHandler) Ask(c *gin.Context) {
 		Description string `json:"description" binding:"required"`
 		Password    string `json:"password" binding:"required"`
 		WorkDir     string `json:"work_dir"` // existing project directory for context
+		Module      string `json:"module"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
@@ -116,14 +118,17 @@ func (h *AutoDevHandler) Ask(c *gin.Context) {
 		return
 	}
 
+	module := models.NormalizeAutoDevModule(req.Module)
+
 	// Create task record
-	task, err := h.db.CreateAutoDevTask(models.TaskTypeAsk, req.Description, "{}", req.WorkDir)
+	opts := models.AutoDevOptions{Module: module}
+	task, err := h.db.CreateAutoDevTask(models.TaskTypeAsk, req.Description, models.MarshalAutoDevOptions(opts), req.WorkDir)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败"})
 		return
 	}
 
-	go h.runAskTask(task.ID, req.Description, req.WorkDir)
+	go h.runAskTask(task.ID, req.Description, req.WorkDir, module)
 	c.JSON(http.StatusOK, task)
 }
 
@@ -173,6 +178,7 @@ func (h *AutoDevHandler) Extend(c *gin.Context) {
 		Description string `json:"description" binding:"required"`
 		Password    string `json:"password" binding:"required"`
 		WorkDir     string `json:"work_dir" binding:"required"` // existing project directory
+		Module      string `json:"module"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
@@ -195,14 +201,17 @@ func (h *AutoDevHandler) Extend(c *gin.Context) {
 		return
 	}
 
+	module := models.NormalizeAutoDevModule(req.Module)
+
 	// Create task record
-	task, err := h.db.CreateAutoDevTask(models.TaskTypeExtend, req.Description, "{}", req.WorkDir)
+	opts := models.AutoDevOptions{Module: module}
+	task, err := h.db.CreateAutoDevTask(models.TaskTypeExtend, req.Description, models.MarshalAutoDevOptions(opts), req.WorkDir)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建任务失败"})
 		return
 	}
 
-	go h.runExtendTask(task.ID, req.Description, req.WorkDir)
+	go h.runExtendTask(task.ID, req.Description, req.WorkDir, module)
 	c.JSON(http.StatusOK, task)
 }
 
@@ -318,9 +327,10 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 		Publish     bool   `json:"publish"`
 		Build       bool   `json:"build"`
 		Push        bool   `json:"push"`
+		Module      string `json:"module"`
 		// Resume support: if set, --from <phase> is passed and WorkDir is used
-		ResumeFrom  int    `json:"resume_from"` // phase number to resume from (1-based, 0 = new task)
-		WorkDir     string `json:"work_dir"`    // existing work dir to resume
+		ResumeFrom int    `json:"resume_from"` // phase number to resume from (1-based, 0 = new task)
+		WorkDir    string `json:"work_dir"`    // existing work dir to resume
 		// Export options
 		ExportFormat string `json:"export_format"` // zip, tar (default: zip)
 	}
@@ -379,7 +389,8 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 		os.Chown(taskDir, autodevUID, autodevGID)
 	}
 
-	opts := models.AutoDevOptions{Publish: req.Publish, Build: req.Build, Push: req.Push}
+	module := models.NormalizeAutoDevModule(req.Module)
+	opts := models.AutoDevOptions{Publish: req.Publish, Build: req.Build, Push: req.Push, Module: module}
 	task, err := h.db.CreateAutoDevTask(taskType, req.Description, models.MarshalAutoDevOptions(opts), taskDir)
 	if err != nil {
 		log.Printf("[AutoDev] CreateAutoDevTask error: type=%s, description=%s, workDir=%s, error=%v", taskType, req.Description, taskDir, err)
@@ -390,9 +401,9 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 	// Execute task based on type
 	switch taskType {
 	case models.TaskTypeAsk:
-		go h.runAskTask(task.ID, req.Description, taskDir)
+		go h.runAskTask(task.ID, req.Description, taskDir, module)
 	case models.TaskTypeExtend:
-		go h.runExtendTask(task.ID, req.Description, taskDir)
+		go h.runExtendTask(task.ID, req.Description, taskDir, module)
 	case models.TaskTypeExport:
 		go h.runExportTask(task.ID, req.Description, taskDir, req.ExportFormat)
 	default:
@@ -400,7 +411,7 @@ func (h *AutoDevHandler) Submit(c *gin.Context) {
 		if isResume {
 			resumeFrom = req.ResumeFrom
 		}
-		go h.runTask(task.ID, req.Description, taskDir, req.Publish, req.Build, req.Push, resumeFrom)
+		go h.runTask(task.ID, req.Description, taskDir, module, req.Publish, req.Build, req.Push, resumeFrom)
 	}
 
 	c.JSON(http.StatusOK, task)
@@ -575,7 +586,7 @@ func (h *AutoDevHandler) GetLogs(c *gin.Context) {
 				phases = append(phases, strings.TrimSuffix(filepath.Base(lf), ".log"))
 			}
 			c.JSON(http.StatusOK, gin.H{
-				"logs":            string(content),
+				"logs":             string(content),
 				"available_phases": phases,
 			})
 			return
@@ -743,8 +754,9 @@ func (h *AutoDevHandler) DeleteTask(c *gin.Context) {
 }
 
 // runTask executes autodev in a background goroutine
-func (h *AutoDevHandler) runTask(id, description, workDir string, publish, build, push bool, resumeFrom int) {
-	args := []string{description, "--path", workDir}
+func (h *AutoDevHandler) runTask(id, description, workDir, module string, publish, build, push bool, resumeFrom int) {
+	module = models.NormalizeAutoDevModule(module)
+	args := []string{description, "--path", workDir, "--module", module}
 	if publish {
 		args = append(args, "--publish")
 	}
@@ -830,7 +842,7 @@ func (h *AutoDevHandler) runTask(id, description, workDir string, publish, build
 
 // runAskTask executes `autodev ask "description" --path workDir` in a background goroutine.
 // The new clawtest supports the `ask` subcommand which appends Q&A to process/qa.md.
-func (h *AutoDevHandler) runAskTask(id, description, workDir string) {
+func (h *AutoDevHandler) runAskTask(id, description, workDir, module string) {
 	// Ensure directories exist with correct ownership for non-root autodev user (uid 1001)
 	logDir := filepath.Join(workDir, ".autodev", "logs")
 	os.MkdirAll(logDir, 0755)
@@ -842,7 +854,8 @@ func (h *AutoDevHandler) runAskTask(id, description, workDir string) {
 
 	// Execute: autodev ask "description" --path workDir
 	// Matches the new clawtest driver.py ask subcommand.
-	cmd := exec.Command(h.autodevPath, "ask", description, "--path", workDir)
+	module = models.NormalizeAutoDevModule(module)
+	cmd := exec.Command(h.autodevPath, "ask", description, "--path", workDir, "--module", module)
 	cmd.Dir = workDir
 	setSysProcCredential(cmd)
 	cmd.Env = h.buildEnv()
@@ -906,7 +919,7 @@ func (h *AutoDevHandler) runAskTask(id, description, workDir string) {
 // runExtendTask executes `autodev extend "description" --path workDir` in a background goroutine.
 // The new clawtest supports the `extend` subcommand which adds new requirements to existing projects.
 // Each iteration writes to process/iter-N/ and updates RESULT.md.
-func (h *AutoDevHandler) runExtendTask(id, description, workDir string) {
+func (h *AutoDevHandler) runExtendTask(id, description, workDir, module string) {
 	// Ensure directories exist with correct ownership for non-root autodev user (uid 1001)
 	logDir := filepath.Join(workDir, ".autodev", "logs")
 	os.MkdirAll(logDir, 0755)
@@ -916,7 +929,8 @@ func (h *AutoDevHandler) runExtendTask(id, description, workDir string) {
 
 	// Execute: autodev extend "description" --path workDir
 	// Matches the new clawtest driver.py extend subcommand.
-	cmd := exec.Command(h.autodevPath, "extend", description, "--path", workDir)
+	module = models.NormalizeAutoDevModule(module)
+	cmd := exec.Command(h.autodevPath, "extend", description, "--path", workDir, "--module", module)
 	cmd.Dir = workDir
 	setSysProcCredential(cmd)
 	cmd.Env = h.buildEnv()
@@ -1099,12 +1113,13 @@ func writeAutoDevState(workDir string, fields map[string]any) {
 // listTaskFiles recursively walks workDir and returns all relevant files with categories.
 //
 // Categories:
-//   "result"  – RESULT.md (the final deliverable)
-//   "code"    – project source files generated by autodev (*.cpp, *.go, *.py, …)
-//   "process" – per-phase process docs in process/
-//   "log"     – execution logs in .autodev/logs/
-//   "docs"    – mkdocs.yml and docs/ directory
-//   "state"   – .autodev/state.json
+//
+//	"result"  – RESULT.md (the final deliverable)
+//	"code"    – project source files generated by autodev (*.cpp, *.go, *.py, …)
+//	"process" – per-phase process docs in process/
+//	"log"     – execution logs in .autodev/logs/
+//	"docs"    – mkdocs.yml and docs/ directory
+//	"state"   – .autodev/state.json
 //
 // Skipped entirely: .git/, node_modules/, __pycache__/, _site/ (too many files),
 // binary/large files (>5MB), and files deeper than 6 levels.
@@ -1210,6 +1225,7 @@ func taskToMap(t *models.AutoDevTask) map[string]any {
 		"type":         t.Type,
 		"description":  t.Description,
 		"options":      t.Options,
+		"module":       t.Module,
 		"status":       t.Status,
 		"exit_code":    t.ExitCode,
 		"work_dir":     t.WorkDir,
@@ -1242,11 +1258,11 @@ func sanitizeTaskName(s string) string {
 }
 
 // ============================================================
-// Claude CLI 版本管理
+// CLI 版本管理
 // ============================================================
 
-// ClaudeVersion holds claude CLI version info
-type ClaudeVersion struct {
+// CLIInfo holds CLI version info
+type CLIInfo struct {
 	Version     string `json:"version"`
 	Path        string `json:"path"`
 	NpmVersion  string `json:"npm_version"`
@@ -1263,6 +1279,228 @@ type ClaudeHealth struct {
 	LatencyMs int64  `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
 	Response  string `json:"response,omitempty"`
+}
+
+// CLITest holds a smoke-test result for an installed CLI runtime.
+type CLITest struct {
+	Version   string `json:"version"`
+	Path      string `json:"path"`
+	Home      string `json:"home"`
+	Available bool   `json:"available"`
+	OK        bool   `json:"ok"`
+	LatencyMs int64  `json:"latency_ms"`
+	ExitCode  int    `json:"exit_code"`
+	Error     string `json:"error,omitempty"`
+	Response  string `json:"response,omitempty"`
+}
+
+func trimCommandOutput(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max]) + "...<truncated>"
+}
+
+func stripEnvVar(env []string, key string) []string {
+	prefix := key + "="
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func extractCodexCLIResponse(output string) string {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	lastMessage := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		if eventType, _ := event["type"].(string); eventType != "item.completed" {
+			continue
+		}
+
+		item, _ := event["item"].(map[string]any)
+		if item == nil {
+			continue
+		}
+		if itemType, _ := item["type"].(string); itemType != "agent_message" {
+			continue
+		}
+		if text, _ := item["text"].(string); strings.TrimSpace(text) != "" {
+			lastMessage = strings.TrimSpace(text)
+		}
+	}
+
+	if lastMessage != "" {
+		return lastMessage
+	}
+	return trimCommandOutput(output, 2000)
+}
+
+// TestClaudeCLI handles GET /api/autodev/claude/cli/test?password=xxx
+// It runs a minimal non-interactive Claude Code request with the same HOME/user
+// strategy as task execution, so the result matches actual runtime behavior.
+func (h *AutoDevHandler) TestClaudeCLI(c *gin.Context) {
+	if !h.checkPasswordQuery(c) {
+		return
+	}
+
+	result := CLITest{
+		Home:     h.resolveHome(),
+		ExitCode: 0,
+	}
+
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		result.Error = "Claude Code CLI 未安装"
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	result.Available = true
+	result.Path = claudePath
+	if out, err := exec.Command(claudePath, "--version").Output(); err == nil {
+		result.Version = strings.TrimSpace(string(out))
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		ctx,
+		claudePath,
+		"--print",
+		"--dangerously-skip-permissions",
+		"-p",
+		"Reply with exactly pong and nothing else.",
+	)
+	cmd.Dir = h.dataDir
+	setSysProcCredential(cmd)
+	cmd.Env = stripEnvVar(h.buildEnv(), "CLAUDECODE")
+
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	result.LatencyMs = time.Since(start).Milliseconds()
+	output := trimCommandOutput(string(out), 2000)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		result.Error = "CLI 测试超时（45s）"
+		if output != "" {
+			result.Error += ": " + output
+		}
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	if err != nil {
+		result.ExitCode = -1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		}
+		if output != "" {
+			result.Error = output
+		} else {
+			result.Error = err.Error()
+		}
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	result.OK = true
+	result.Response = output
+	c.JSON(http.StatusOK, result)
+}
+
+// TestCodexCLI handles GET /api/autodev/codex/cli/test?password=xxx
+// It runs a minimal Codex exec request with the same HOME/user strategy as the
+// autodev runner, so the result matches actual runtime behavior.
+func (h *AutoDevHandler) TestCodexCLI(c *gin.Context) {
+	if !h.checkPasswordQuery(c) {
+		return
+	}
+
+	result := CLITest{
+		Home:     h.resolveHome(),
+		ExitCode: 0,
+	}
+
+	codexPath, err := exec.LookPath("codex")
+	if err != nil {
+		result.Error = "Codex CLI 未安装"
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	result.Available = true
+	result.Path = codexPath
+	if out, err := exec.Command(codexPath, "--version").Output(); err == nil {
+		result.Version = strings.TrimSpace(string(out))
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		ctx,
+		codexPath,
+		"exec",
+		"--json",
+		"--skip-git-repo-check",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-C",
+		h.dataDir,
+		"Reply with exactly pong and nothing else.",
+	)
+	cmd.Dir = h.dataDir
+	setSysProcCredential(cmd)
+	cmd.Env = h.buildEnv()
+
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	result.LatencyMs = time.Since(start).Milliseconds()
+	rawOutput := string(out)
+	output := trimCommandOutput(rawOutput, 2000)
+
+	if ctx.Err() == context.DeadlineExceeded {
+		result.Error = "CLI 测试超时（45s）"
+		if output != "" {
+			result.Error += ": " + output
+		}
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	if err != nil {
+		result.ExitCode = -1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		}
+		if output != "" {
+			result.Error = output
+		} else {
+			result.Error = err.Error()
+		}
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	result.OK = true
+	result.Response = extractCodexCLIResponse(rawOutput)
+	c.JSON(http.StatusOK, result)
 }
 
 // TestModel handles GET /api/autodev/claude/test?password=xxx
@@ -1352,43 +1590,49 @@ func (h *AutoDevHandler) TestModel(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func getCLIInfo(binary string) CLIInfo {
+	info := CLIInfo{}
+
+	if path, err := exec.LookPath(binary); err == nil {
+		info.Path = path
+		info.Available = true
+	}
+
+	if out, err := exec.Command(binary, "--version").Output(); err == nil {
+		info.Version = strings.TrimSpace(string(out))
+		info.Available = true
+	}
+
+	if out, err := exec.Command("npm", "--version").Output(); err == nil {
+		info.NpmVersion = strings.TrimSpace(string(out))
+	}
+
+	if out, err := exec.Command("node", "--version").Output(); err == nil {
+		info.NodeVersion = strings.TrimSpace(string(out))
+	}
+
+	return info
+}
+
 // GetClaudeVersion handles GET /api/autodev/claude/version?password=xxx
 func (h *AutoDevHandler) GetClaudeVersion(c *gin.Context) {
 	if !h.checkPassword(c) {
 		return
 	}
 
-	info := ClaudeVersion{}
-
-	// get claude version
-	if out, err := exec.Command("claude", "--version").Output(); err == nil {
-		info.Version = strings.TrimSpace(string(out))
-		info.Available = true
-	} else {
-		info.Available = false
-	}
-
-	// get claude path
-	if out, err := exec.Command("which", "claude").Output(); err == nil {
-		info.Path = strings.TrimSpace(string(out))
-	}
-
-	// npm version
-	if out, err := exec.Command("npm", "--version").Output(); err == nil {
-		info.NpmVersion = strings.TrimSpace(string(out))
-	}
-
-	// node version
-	if out, err := exec.Command("node", "--version").Output(); err == nil {
-		info.NodeVersion = strings.TrimSpace(string(out))
-	}
-
-	c.JSON(http.StatusOK, info)
+	c.JSON(http.StatusOK, getCLIInfo("claude"))
 }
 
-// UpdateClaude handles GET /api/autodev/claude/update/stream?password=xxx
-// Streams npm install output via SSE
-func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
+// GetCodexVersion handles GET /api/autodev/codex/version?password=xxx
+func (h *AutoDevHandler) GetCodexVersion(c *gin.Context) {
+	if !h.checkPassword(c) {
+		return
+	}
+
+	c.JSON(http.StatusOK, getCLIInfo("codex"))
+}
+
+func (h *AutoDevHandler) streamNpmCLIUpdate(c *gin.Context, displayName, binary, npmPackage string) {
 	if !h.checkPasswordQuery(c) {
 		return
 	}
@@ -1414,22 +1658,21 @@ func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
 		sendEvent("log", string(b))
 	}
 
-	sendLine("🚀 开始更新 Claude Code CLI...")
-	sendLine("执行: npm install -g @anthropic-ai/claude-code@latest")
+	installCommand := fmt.Sprintf("npm install -g %s", npmPackage)
+	sendLine(fmt.Sprintf("🚀 开始更新 %s...", displayName))
+	sendLine("执行: " + installCommand)
 
-	// record version before update
 	oldVersion := ""
-	if out, err := exec.Command("claude", "--version").Output(); err == nil {
+	if out, err := exec.Command(binary, "--version").Output(); err == nil {
 		oldVersion = strings.TrimSpace(string(out))
 		sendLine(fmt.Sprintf("当前版本: %s", oldVersion))
 	} else {
-		sendLine("⚠️  当前未安装 Claude Code")
+		sendLine(fmt.Sprintf("⚠️  当前未安装 %s", displayName))
 	}
 
 	sendLine("")
 
-	// run npm install
-	cmd := exec.Command("npm", "install", "-g", "@anthropic-ai/claude-code@latest", "--unsafe-perm")
+	cmd := exec.Command("npm", "install", "-g", npmPackage, "--unsafe-perm")
 	cmd.Env = os.Environ()
 
 	stdout, err := cmd.StdoutPipe()
@@ -1451,7 +1694,6 @@ func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
 		return
 	}
 
-	// stream stdout and stderr concurrently
 	done := make(chan struct{}, 2)
 	stream := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
@@ -1474,9 +1716,8 @@ func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
 		return
 	}
 
-	// get new version
 	newVersion := ""
-	if out, err2 := exec.Command("claude", "--version").Output(); err2 == nil {
+	if out, err2 := exec.Command(binary, "--version").Output(); err2 == nil {
 		newVersion = strings.TrimSpace(string(out))
 	}
 
@@ -1493,6 +1734,18 @@ func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
 		"new_version": newVersion,
 	})
 	sendEvent("done", string(b))
+}
+
+// UpdateClaude handles GET /api/autodev/claude/update/stream?password=xxx
+// Streams npm install output via SSE
+func (h *AutoDevHandler) UpdateClaude(c *gin.Context) {
+	h.streamNpmCLIUpdate(c, "Claude Code CLI", "claude", "@anthropic-ai/claude-code@latest")
+}
+
+// UpdateCodex handles GET /api/autodev/codex/update/stream?password=xxx
+// Streams npm install output via SSE
+func (h *AutoDevHandler) UpdateCodex(c *gin.Context) {
+	h.streamNpmCLIUpdate(c, "Codex CLI", "codex", "@openai/codex@latest")
 }
 
 // ClawtestInfo holds clawtest repo version info
@@ -1788,9 +2041,9 @@ func (h *AutoDevHandler) RegenerateSSHKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"public_key": pubKey,
-		"key_type":   "ed25519",
+		"public_key":  pubKey,
+		"key_type":    "ed25519",
 		"regenerated": true,
-		"github_tip": "新密钥已生成，请将 public_key 重新添加到 GitHub → Settings → SSH and GPG keys",
+		"github_tip":  "新密钥已生成，请将 public_key 重新添加到 GitHub → Settings → SSH and GPG keys",
 	})
 }
