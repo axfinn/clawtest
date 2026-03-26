@@ -25,6 +25,19 @@ CODEX_MODULE = 'codex'
 IDLE_TIMEOUT = 600  # 秒（10分钟）
 HEARTBEAT_INTERVAL = 30  # 秒
 
+# 熔断机制（借鉴 Claude Code Auto Mode）
+# 连续失败 >= MAX_CONSECUTIVE_FAILURES 或 总失败 >= MAX_TOTAL_FAILURES 时触发熔断
+MAX_CONSECUTIVE_FAILURES = 3
+MAX_TOTAL_FAILURES = 20
+
+# 全局熔断状态（跨阶段追踪）
+_circuit_state = {
+    'consecutive_failures': 0,
+    'total_failures': 0,
+    'tripped': False,
+}
+_circuit_lock = threading.Lock()
+
 
 def normalize_module(module: str) -> str:
     return CODEX_MODULE if (module or '').strip().lower() == CODEX_MODULE else CC_MODULE
@@ -253,6 +266,45 @@ def process_event(module: str, event: dict, label: str) -> dict:
     return handle_claude_event(event, label)
 
 
+def _check_circuit_breaker() -> tuple[bool, str]:
+    """
+    检查熔断状态。
+    返回 (is_tripped, message)
+    """
+    with _circuit_lock:
+        if _circuit_state['tripped']:
+            return True, f"熔断已触发（连续失败 {_circuit_state['consecutive_failures']} 次，总失败 {_circuit_state['total_failures']} 次）"
+        return False, ""
+
+
+def _record_success():
+    """记录成功，重置连续失败计数"""
+    with _circuit_lock:
+        _circuit_state['consecutive_failures'] = 0
+
+
+def _record_failure() -> bool:
+    """
+    记录失败，更新熔断状态。
+    返回是否触发熔断
+    """
+    with _circuit_lock:
+        _circuit_state['consecutive_failures'] += 1
+        _circuit_state['total_failures'] += 1
+
+        if (_circuit_state['consecutive_failures'] >= MAX_CONSECUTIVE_FAILURES or
+            _circuit_state['total_failures'] >= MAX_TOTAL_FAILURES):
+            _circuit_state['tripped'] = True
+            return True
+        return False
+
+
+def get_circuit_state() -> dict:
+    """获取当前熔断状态（用于调试）"""
+    with _circuit_lock:
+        return dict(_circuit_state)
+
+
 def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None, module: str = CC_MODULE) -> bool:
     """
     运行一个阶段。
@@ -261,13 +313,24 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None, module: s
     - 完整日志写入 .autodev/logs/
     - timeout: 阶段总超时（秒），None 表示不限（但仍有空闲超时）
     - 若进程挂起（无输出超过 IDLE_TIMEOUT 秒），自动终止
+    - 熔断机制：连续失败 >= 3 或 总失败 >= 20 时停止自动重试
     """
+    # 检查熔断状态
+    tripped, msg = _check_circuit_breaker()
+    if tripped:
+        print(f"\n🛑 熔断已触发，停止自动执行: {msg}", flush=True)
+        print(f"   请检查任务状态或手动重试", flush=True)
+        return False
+
     module = normalize_module(module)
     logger = PhaseLogger(cwd, label)
     logger.header(prompt, module)
 
     cmd = build_command(module, prompt, cwd)
     env = build_env(module)
+
+    # 获取当前熔断状态用于显示
+    circuit = get_circuit_state()
 
     print(f"\n{'=' * 60}", flush=True)
     print(f"▶  {label}", flush=True)
@@ -276,6 +339,8 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None, module: s
         print(f"   ⏱  总超时: {timeout}s  空闲超时: {IDLE_TIMEOUT}s", flush=True)
     else:
         print(f"   ⏱  空闲超时: {IDLE_TIMEOUT}s（无总时限）", flush=True)
+    print(f"   🔴 熔断: 连续失败 {circuit['consecutive_failures']}/{MAX_CONSECUTIVE_FAILURES}，"
+          f"总失败 {circuit['total_failures']}/{MAX_TOTAL_FAILURES}", flush=True)
     print('=' * 60, flush=True)
 
     turns = None
@@ -317,8 +382,11 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None, module: s
 
             if now - last_heartbeat >= HEARTBEAT_INTERVAL:
                 last_heartbeat = now
-                print(f"   ⏳ 运行中... 已用 {elapsed:.0f}s，空闲 {idle:.0f}s/{IDLE_TIMEOUT}s", flush=True)
-                logger.write(f"[HEARTBEAT] elapsed={elapsed:.0f}s idle={idle:.0f}s\n")
+                circuit = get_circuit_state()
+                print(f"   ⏳ 运行中... 已用 {elapsed:.0f}s，空闲 {idle:.0f}s/{IDLE_TIMEOUT}s  "
+                      f"连续失败 {circuit['consecutive_failures']}/{MAX_CONSECUTIVE_FAILURES}", flush=True)
+                logger.write(f"[HEARTBEAT] elapsed={elapsed:.0f}s idle={idle:.0f}s "
+                             f"consecutive={circuit['consecutive_failures']} total={circuit['total_failures']}\n")
 
             if timeout and elapsed >= timeout:
                 timed_out = True
@@ -375,6 +443,16 @@ def run_phase(prompt: str, cwd: Path, label: str, timeout: int = None, module: s
         _kill(proc)
         print("\n⚠️  用户中断", flush=True)
         logger.write("INTERRUPTED\n")
+
+    # 更新熔断状态
+    if success:
+        _record_success()
+    else:
+        tripped = _record_failure()
+        if tripped:
+            print(f"\n🛑 熔断触发！连续失败 {circuit['consecutive_failures']}/{MAX_CONSECUTIVE_FAILURES}，"
+                  f"总失败 {circuit['total_failures']}/{MAX_TOTAL_FAILURES}", flush=True)
+            print(f"   后续阶段将停止自动执行", flush=True)
 
     logger.footer(success, turns, cost)
     print(f"   📝 日志: {logger.log_file}", flush=True)

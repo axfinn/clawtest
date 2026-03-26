@@ -164,6 +164,8 @@ def phase_do(task: str, cwd: Path) -> str:
 任务: {task}
 工作目录: {cwd}
 
+{AUTO_MODE_PRINCIPLES}
+
 【DO - 执行阶段】
 
 步骤：
@@ -177,7 +179,7 @@ def phase_do(task: str, cwd: Path) -> str:
    - 查缺补漏 → 用 WebSearch/WebFetch 补充
 3. 执行原则：
    - 产出**完整可用**的结果，不留 TODO / 占位符
-   - 遇到问题主动解决，不要停下来询问
+   - 立即执行，做合理假设并继续，不要停下来询问
 4. 完成后用 Write 将执行过程写入 {cwd}/process/04-do.md：
    # DO - 执行记录
    ## 完成的工作（逐条）
@@ -196,28 +198,36 @@ def phase_review(task: str, cwd: Path) -> str:
 任务: {task}
 工作目录: {cwd}
 
+{AUTO_MODE_PRINCIPLES}
+
 【REVIEW - 审查阶段】
 
 ⚠️ 重要：**先写报告框架，再修问题**，确保无论时间多紧迫都有报告产出
 
+**两阶段验证策略**：
+- Stage 1 (快速验证)：只验证核心功能是否工作，产出一个可运行的最小可用系统
+- Stage 2 (深度验证)：完整检查所有成功标准，逐项验证
+
 步骤：
 1. 读取 {cwd}/process/02-define.md 获取成功标准
 2. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
-3. 循环验证（最多 3 轮）：
-   - 逐项检查成功标准：代码用 Bash 运行，文档通读检查
+3. Stage 1 快速验证（最多 1 轮）：
+   - 验证核心功能是否工作
+   - 发现问题直接用 Edit/Bash 修复
+4. Stage 2 深度验证（最多 2 轮）：
+   - 逐项检查所有成功标准：代码用 Bash 运行，文档通读检查
    - 发现问题直接用 Edit/Bash 修复目标项目文件
    - 修复后更新 05-review.md，再次验证
    - 所有标准 ✅ 则结束循环
-4. 最终在 05-review.md 写明整体质量评估
-
-若发现需要大规模重写（超过 30% 的文件），在报告中注明"需要重跑 DO 阶段"，
-系统会自动重试。
+5. 最终在 05-review.md 写明整体质量评估
 
 05-review.md 格式：
    # REVIEW - 审查报告
    ## 验证清单（逐项 ✅/❌/⚠️）
    | 成功标准 | 状态 | 说明 |
    |---------|------|------|
+   ## Stage 1 快速验证结果
+   ## Stage 2 深度验证结果
    ## 发现的问题及修复情况
    ## 最终质量评估
 """
@@ -233,6 +243,8 @@ def phase_deliver(task: str, cwd: Path) -> str:
 
 任务: {task}
 工作目录: {cwd}
+
+{AUTO_MODE_PRINCIPLES}
 
 【DELIVER - 交付阶段】
 
