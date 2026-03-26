@@ -3,6 +3,7 @@ package handlers
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,22 @@ import (
 const autodevUID = 1001
 const autodevGID = 1001
 const autodevHome = "/home/autodev"
+
+const (
+	defaultLogPreviewBytes = 192 * 1024
+	defaultLogPreviewLines = 300
+	maxPreviewBytes        = 1024 * 1024
+	maxPreviewLines        = 2000
+)
+
+// textPreview holds the result of a text file preview operation
+type textPreview struct {
+	Content            string
+	Mode               string
+	Truncated          bool
+	DisplayBytes       int
+	DisplayedLineCount int
+}
 
 // setSysProcCredential sets the credential on cmd only when running as root.
 // When not root (e.g. local dev), setuid is not permitted and must be skipped.
@@ -578,6 +595,8 @@ func (h *AutoDevHandler) GetFile(c *gin.Context) {
 
 // GetLogs handles GET /api/autodev/tasks/:id/logs?password=xxx&phase=driver
 // phase: driver (default), session, or any phase name like "01-discover"
+// max_bytes: max bytes to read (default 192KB, max 1MB)
+// max_lines: max lines to return (default 300, max 2000)
 func (h *AutoDevHandler) GetLogs(c *gin.Context) {
 	if !h.checkPassword(c) {
 		return
@@ -592,6 +611,9 @@ func (h *AutoDevHandler) GetLogs(c *gin.Context) {
 		phase = "driver"
 	}
 
+	maxBytes := parsePositiveInt(c.Query("max_bytes"), defaultLogPreviewBytes, 8*1024, maxPreviewBytes)
+	maxLines := parsePositiveInt(c.Query("max_lines"), defaultLogPreviewLines, 20, maxPreviewLines)
+
 	logDir := filepath.Join(task.WorkDir, ".autodev", "logs")
 	// try phase.log first, then fallback to driver.log
 	candidates := []string{
@@ -600,22 +622,36 @@ func (h *AutoDevHandler) GetLogs(c *gin.Context) {
 		filepath.Join(logDir, "session.log"),
 		filepath.Join(task.WorkDir, "autodev.log"),
 	}
+	availablePhases := listAvailableLogPhases(logDir)
 	for _, lp := range candidates {
-		if content, err := os.ReadFile(lp); err == nil {
-			// list available log files
-			logFiles, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
-			var phases []string
-			for _, lf := range logFiles {
-				phases = append(phases, strings.TrimSuffix(filepath.Base(lf), ".log"))
+		info, err := os.Stat(lp)
+		if err == nil && !info.IsDir() {
+			preview, err := readTextPreview(lp, "tail", maxBytes, maxLines)
+			if err != nil {
+				continue
 			}
 			c.JSON(http.StatusOK, gin.H{
-				"logs":             string(content),
-				"available_phases": phases,
+				"logs":                  preview.Content,
+				"available_phases":       availablePhases,
+				"log_path":               lp,
+				"total_bytes":            info.Size(),
+				"display_bytes":          preview.DisplayBytes,
+				"displayed_line_count":   preview.DisplayedLineCount,
+				"truncated":              preview.Truncated,
+				"preview_mode":           preview.Mode,
 			})
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"logs": "", "available_phases": []string{}})
+	c.JSON(http.StatusOK, gin.H{
+		"logs":                "",
+		"available_phases":    availablePhases,
+		"total_bytes":         0,
+		"display_bytes":        0,
+		"displayed_line_count": 0,
+		"truncated":           false,
+		"preview_mode":        "tail",
+	})
 }
 
 // Download handles GET /api/autodev/tasks/:id/download?password=xxx
@@ -1211,6 +1247,146 @@ func listTaskFiles(workDir string, limit, offset int) ([]map[string]any, int) {
 	}
 
 	return allFiles[offset:end], total
+}
+
+// ---- text preview helpers for log files ----
+
+func parsePositiveInt(s string, defaultVal, minVal, maxVal int) int {
+	if s == "" {
+		return defaultVal
+	}
+	val, err := strconv.Atoi(s)
+	if err != nil || val < minVal {
+		return minVal
+	}
+	if val > maxVal {
+		return maxVal
+	}
+	return val
+}
+
+func readTextPreview(path, mode string, maxBytes, maxLines int) (textPreview, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return textPreview{}, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return textPreview{}, err
+	}
+
+	var (
+		raw       []byte
+		truncated bool
+	)
+
+	switch mode {
+	case "tail":
+		raw, truncated, err = readTailBytes(f, info.Size(), int64(maxBytes))
+	default:
+		limit := info.Size()
+		if limit > int64(maxBytes) {
+			limit = int64(maxBytes)
+			truncated = true
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return textPreview{}, err
+		}
+		raw, err = io.ReadAll(io.LimitReader(f, limit))
+	}
+	if err != nil {
+		return textPreview{}, err
+	}
+
+	if mode == "tail" && truncated {
+		if idx := bytes.IndexByte(raw, '\n'); idx >= 0 {
+			raw = raw[idx+1:]
+		}
+	}
+
+	var lineTrimmed bool
+	if mode == "tail" {
+		raw, lineTrimmed = trimLastLines(raw, maxLines)
+	} else {
+		raw, lineTrimmed = trimFirstLines(raw, maxLines)
+	}
+	truncated = truncated || lineTrimmed
+
+	content := string(bytes.ToValidUTF8(raw, []byte("�")))
+	return textPreview{
+		Content:            content,
+		Mode:               mode,
+		Truncated:          truncated,
+		DisplayBytes:       len(raw),
+		DisplayedLineCount: countLines(content),
+	}, nil
+}
+
+func readTailBytes(f *os.File, fileSize, maxBytes int64) ([]byte, bool, error) {
+	if maxBytes <= 0 || fileSize <= maxBytes {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, false, err
+		}
+		data, err := io.ReadAll(f)
+		return data, false, err
+	}
+
+	start := fileSize - maxBytes
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	data, err := io.ReadAll(f)
+	return data, true, err
+}
+
+func trimFirstLines(data []byte, maxLines int) ([]byte, bool) {
+	if maxLines <= 0 || len(data) == 0 {
+		return data, false
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	if len(lines) <= maxLines {
+		return data, false
+	}
+	return bytes.Join(lines[:maxLines], nil), true
+}
+
+func trimLastLines(data []byte, maxLines int) ([]byte, bool) {
+	if maxLines <= 0 || len(data) == 0 {
+		return data, false
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	if len(lines) <= maxLines {
+		return data, false
+	}
+	return bytes.Join(lines[len(lines)-maxLines:], nil), true
+}
+
+func countLines(content string) int {
+	if content == "" {
+		return 0
+	}
+	lines := strings.Split(content, "\n")
+	// Don't count trailing empty string from Split
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		return len(lines) - 1
+	}
+	return len(lines)
+}
+
+func listAvailableLogPhases(logDir string) []string {
+	logFiles, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
+	var phases []string
+	seen := make(map[string]bool)
+	for _, lf := range logFiles {
+		phase := strings.TrimSuffix(filepath.Base(lf), ".log")
+		if !seen[phase] {
+			seen[phase] = true
+			phases = append(phases, phase)
+		}
+	}
+	return phases
 }
 
 // classifyFile returns the display category for a file, or "" to skip it.
