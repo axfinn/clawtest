@@ -15,4 +15,6 @@ web/backend/clawweb
 web/backend/clawweb_test
 web/backend/config.yaml
 web/backend/data/
+web/backend/static/assets/
 web/frontend/node_modules/
+web/frontend/dist/
