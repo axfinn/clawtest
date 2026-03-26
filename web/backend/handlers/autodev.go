@@ -509,7 +509,7 @@ func (h *AutoDevHandler) GetState(c *gin.Context) {
 	c.JSON(http.StatusOK, state)
 }
 
-// GetFiles handles GET /api/autodev/tasks/:id/files?password=xxx
+// GetFiles handles GET /api/autodev/tasks/:id/files?password=xxx&limit=xxx&offset=xxx
 func (h *AutoDevHandler) GetFiles(c *gin.Context) {
 	if !h.checkPassword(c) {
 		return
@@ -518,10 +518,33 @@ func (h *AutoDevHandler) GetFiles(c *gin.Context) {
 	if !ok {
 		return
 	}
-	files := listTaskFiles(task.WorkDir)
+
+	// Parse pagination params
+	limit := 500 // default max files per request
+	offset := 0
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+			if limit > 1000 {
+				limit = 1000 // max cap
+			}
+		}
+	}
+	if o := c.Query("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	files, total := listTaskFiles(task.WorkDir, limit, offset)
 	siteDir := filepath.Join(task.WorkDir, "_site")
 	_, siteErr := os.Stat(siteDir)
-	c.JSON(http.StatusOK, gin.H{"files": files, "has_site": siteErr == nil})
+	c.JSON(http.StatusOK, gin.H{
+		"files":    files,
+		"has_site": siteErr == nil,
+		"total":    total,
+		"truncated": total > limit+offset,
+	})
 }
 
 // GetFile handles GET /api/autodev/tasks/:id/file?password=xxx&path=RESULT.md
@@ -1110,7 +1133,8 @@ func writeAutoDevState(workDir string, fields map[string]any) {
 	}
 }
 
-// listTaskFiles recursively walks workDir and returns all relevant files with categories.
+// listTaskFiles recursively walks workDir and returns relevant files with categories.
+// It supports pagination via limit/offset and stops early when limit is reached.
 //
 // Categories:
 //
@@ -1123,8 +1147,8 @@ func writeAutoDevState(workDir string, fields map[string]any) {
 //
 // Skipped entirely: .git/, node_modules/, __pycache__/, _site/ (too many files),
 // binary/large files (>5MB), and files deeper than 6 levels.
-func listTaskFiles(workDir string) []map[string]any {
-	var files []map[string]any
+func listTaskFiles(workDir string, limit, offset int) ([]map[string]any, int) {
+	var allFiles []map[string]any
 
 	filepath.WalkDir(workDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -1165,7 +1189,7 @@ func listTaskFiles(workDir string) []map[string]any {
 			return nil // skip
 		}
 
-		files = append(files, map[string]any{
+		allFiles = append(allFiles, map[string]any{
 			"path":     rel,
 			"name":     d.Name(),
 			"size":     info.Size(),
@@ -1175,7 +1199,18 @@ func listTaskFiles(workDir string) []map[string]any {
 		return nil
 	})
 
-	return files
+	total := len(allFiles)
+
+	// Apply pagination
+	if offset >= total {
+		return []map[string]any{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	return allFiles[offset:end], total
 }
 
 // classifyFile returns the display category for a file, or "" to skip it.

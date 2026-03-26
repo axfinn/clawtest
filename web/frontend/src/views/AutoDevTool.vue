@@ -498,7 +498,7 @@
                     </el-button>
                   </div>
                 </div>
-                <div class="markdown-view" v-html="renderedResult" />
+                <div ref="resultMarkdownRef" class="markdown-view" v-html="renderedResult" />
               </div>
             </div>
 
@@ -521,6 +521,10 @@
                       :prefix-icon="Search"
                       class="file-search-input"
                     />
+                  </div>
+                  <!-- Truncated notice -->
+                  <div v-if="filesTruncated" class="px-3 py-1.5 text-xs text-amber-400 bg-amber-400/10">
+                    仅显示 {{ taskFiles.length }} / {{ filesTotal }} 个文件，请使用搜索过滤
                   </div>
                   <template v-for="group in filteredFileGroups" :key="group.category">
                     <div class="file-group-header" @click="toggleGroupCollapse(group.category)" style="cursor:pointer">
@@ -579,6 +583,7 @@
                     </div>
                     <div class="flex-1 overflow-auto">
                       <div v-if="activeFilePath?.endsWith('.md')"
+                        ref="fileMarkdownRef"
                         class="markdown-view p-4"
                         v-html="renderedActiveFile"
                       />
@@ -595,8 +600,16 @@
                 <el-select v-model="activeLogPhase" size="small" class="w-36" @change="loadLogs">
                   <el-option v-for="ph in availableLogPhases" :key="ph" :label="ph" :value="ph" />
                 </el-select>
+                <el-select v-model="logTailLines" size="small" class="preview-select" @change="loadLogs">
+                  <el-option v-for="option in LOG_TAIL_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
                 <span class="text-xs text-slate-500">{{ logLineCount }} 行</span>
+                <span v-if="logMeta.total_bytes" class="text-xs text-slate-600 hidden sm:inline">{{ formatBytes(logMeta.total_bytes) }}</span>
                 <div class="flex gap-2 ml-auto">
+                  <el-button size="small" :type="logFollow ? 'success' : 'info'" plain @click="logFollow = !logFollow" class="action-btn">
+                    <el-icon><Connection /></el-icon>
+                    <span class="ml-1 hidden sm:inline">{{ logFollow ? '跟随中' : '已暂停' }}</span>
+                  </el-button>
                   <el-button size="small" :loading="loadingLogs" @click="loadLogs" plain class="action-btn">
                     <el-icon><Refresh /></el-icon>
                   </el-button>
@@ -604,6 +617,10 @@
                     <el-icon><Bottom /></el-icon>
                   </el-button>
                 </div>
+              </div>
+              <div v-if="logNotice" class="preview-notice preview-notice--terminal">
+                <el-icon><WarningFilled /></el-icon>
+                <span>{{ logNotice }}</span>
               </div>
               <div v-if="!logContent" class="empty-content bg-slate-950">
                 <el-icon class="text-3xl text-slate-700 mb-2"><Monitor /></el-icon>
@@ -645,7 +662,20 @@
       class="fullscreen-dialog"
       destroy-on-close
     >
-      <div class="fullscreen-content markdown-view" v-html="fullscreenHtml" />
+      <div ref="fullscreenMarkdownRef" class="fullscreen-content markdown-view" v-html="fullscreenHtml" @click="handleFullscreenClick" />
+    </el-dialog>
+
+    <!-- ===== Image Fullscreen Dialog ===== -->
+    <el-dialog
+      v-model="imageFullscreenVisible"
+      :title="imageFullscreenTitle"
+      width="90%"
+      class="image-fullscreen-dialog"
+      destroy-on-close
+    >
+      <div class="image-fullscreen-body">
+        <img :src="imageFullscreenUrl" :alt="imageFullscreenTitle" class="image-fullscreen-img">
+      </div>
     </el-dialog>
 
     <!-- ===== Capabilities Dialog ===== -->
@@ -1117,6 +1147,11 @@ const md = new MarkdownIt({
   linkify: true,
   typographer: true,
   highlight(str, lang) {
+    // Special handling for mermaid blocks - escape but mark for later rendering
+    if (lang === 'mermaid') {
+      const encoded = btoa(unescape(encodeURIComponent(str)))
+      return `<div class="mermaid-block" data-source="${encoded}"><div class="mermaid-rendered"></div></div>`
+    }
     if (lang && hljs.getLanguage(lang)) {
       try {
         return `<pre class="hljs-block"><code class="hljs language-${lang}">${hljs.highlight(str, { language: lang, ignoreIllegals: true }).value}</code></pre>`
@@ -1131,8 +1166,97 @@ function renderMd(content) {
   return md.render(content)
 }
 
+// ---- mermaid setup ----
+import mermaid from 'mermaid'
+
+const initMermaid = () => {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'loose',
+    theme: isDark.value ? 'dark' : 'default',
+    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+    sequence: { useMaxWidth: true },
+    gantt: { useMaxWidth: true },
+    pie: { useMaxWidth: true },
+    er: { useMaxWidth: true }
+  })
+}
+
+let mermaidCounter = 0
+async function renderMermaidInElement(el, forceReRender = false) {
+  if (!el) return
+  const blocks = el.querySelectorAll('.mermaid-block')
+  for (const block of blocks) {
+    if (block.dataset.rendered && !forceReRender) continue
+    try {
+      const source = decodeURIComponent(escape(atob(block.dataset.source)))
+      const id = `mermaid-auto-${Date.now()}-${++mermaidCounter}`
+      const { svg } = await mermaid.render(id, source)
+      block.dataset.rendered = 'true'
+      const rendered = block.querySelector('.mermaid-rendered')
+      if (rendered) {
+        rendered.innerHTML = svg
+        rendered.dataset.diagramId = id
+      }
+      // Add source toggle button (remove old one first if re-rendering)
+      const oldBtn = block.querySelector('.mermaid-source-toggle')
+      if (oldBtn) oldBtn.remove()
+      const btn = document.createElement('button')
+      btn.className = 'mermaid-source-toggle'
+      btn.textContent = '查看源码'
+      btn.onclick = () => {
+        const sourceEl = block.querySelector('.mermaid-source-code')
+        if (sourceEl) {
+          sourceEl.classList.toggle('visible')
+          btn.textContent = sourceEl.classList.contains('visible') ? '隐藏源码' : '查看源码'
+        }
+      }
+      block.style.position = 'relative'
+      block.appendChild(btn)
+      // Add source code element (remove old one first if re-rendering)
+      const oldSrc = block.querySelector('.mermaid-source-code')
+      if (oldSrc) oldSrc.remove()
+      const sourceEl = document.createElement('div')
+      sourceEl.className = 'mermaid-source-code'
+      sourceEl.innerHTML = `<pre>${md.utils.escapeHtml(source)}</pre>`
+      block.appendChild(sourceEl)
+    } catch (err) {
+      const rendered = block.querySelector('.mermaid-rendered')
+      if (rendered) {
+        rendered.innerHTML = `<div class="mermaid-error">⚠️ 渲染失败: ${err.message || err}</div>`
+      }
+    }
+  }
+}
+
 const SESSION_KEY = 'autodev_password'
 const API_BASE = '/api/autodev'
+const LOG_PREVIEW_BYTES = 192 * 1024
+
+const LOG_TAIL_OPTIONS = [
+  { label: '尾部 200 行', value: 200 },
+  { label: '尾部 300 行', value: 300 },
+  { label: '尾部 500 行', value: 500 },
+  { label: '尾部 1000 行', value: 1000 },
+]
+
+function createEmptyLogMeta() {
+  return { log_path: '', total_bytes: 0, display_bytes: 0, displayed_line_count: 0, truncated: false, preview_mode: 'tail' }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let index = 0
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024
+    index += 1
+  }
+  const digits = size >= 10 || index === 0 ? 0 : 1
+  return `${size.toFixed(digits)} ${units[index]}`
+}
 
 // ---- theme: sync with global useTheme composable ----
 const { currentTheme, themeMode, toggleTheme } = useTheme()
@@ -1457,6 +1581,8 @@ const taskState = ref(null)
 const activeTab = ref('result')
 const taskFiles = ref([])
 const taskHasSite = ref(false)
+const filesTotal = ref(0)
+const filesTruncated = ref(false)
 const activeFilePath = ref(null)
 const activeFileContent = ref('')
 const loadingFile = ref(false)
@@ -1478,6 +1604,41 @@ const initLogEl = ref(null)
 const fullscreenVisible = ref(false)
 const fullscreenTitle = ref('')
 const fullscreenHtml = ref('')
+const fullscreenMarkdownRef = ref(null)
+const resultMarkdownRef = ref(null)
+const fileMarkdownRef = ref(null)
+
+// image fullscreen
+const imageFullscreenVisible = ref(false)
+const imageFullscreenUrl = ref('')
+const imageFullscreenTitle = ref('')
+
+function openImageFullscreen(url, title = '图片') {
+  imageFullscreenUrl.value = url
+  imageFullscreenTitle.value = title
+  imageFullscreenVisible.value = true
+}
+
+function handleFullscreenClick(e) {
+  const img = e.target.closest('img')
+  if (img) {
+    openImageFullscreen(img.src, img.alt || '图片')
+  }
+}
+
+// log refs
+const logMeta = ref(createEmptyLogMeta())
+const logTailLines = ref(300)
+const logFollow = ref(true)
+
+const logNotice = computed(() => {
+  const parts = []
+  if (logMeta.value.log_path) parts.push(logMeta.value.log_path)
+  if (logMeta.value.truncated) parts.push(`仅显示尾部 ${logLineCount.value} 行 / ${formatBytes(logMeta.value.display_bytes)}`)
+  if (logMeta.value.total_bytes) parts.push(`原日志 ${formatBytes(logMeta.value.total_bytes)}`)
+  if (!logFollow.value && logContent.value) parts.push('已暂停自动跟随滚动')
+  return parts.join(' · ')
+})
 
 const renderedResult = computed(() => renderMd(resultContent.value))
 const renderedActiveFile = computed(() => renderMd(activeFileContent.value))
@@ -1486,12 +1647,20 @@ function openFullscreen() {
   fullscreenTitle.value = 'RESULT.md'
   fullscreenHtml.value = renderedResult.value
   fullscreenVisible.value = true
+  nextTick(() => {
+    const el = document.querySelector('.fullscreen-content')
+    if (el) renderMermaidInElement(el)
+  })
 }
 
 function openFullscreenFile() {
   fullscreenTitle.value = activeFilePath.value?.split('/').pop() || '文件'
   fullscreenHtml.value = renderedActiveFile.value
   fullscreenVisible.value = true
+  nextTick(() => {
+    const el = document.querySelector('.fullscreen-content')
+    if (el) renderMermaidInElement(el)
+  })
 }
 
 async function copyResult() {
@@ -1516,6 +1685,9 @@ async function selectTask(task) {
   activeFilePath.value = null
   activeFileContent.value = ''
   logContent.value = ''
+  logMeta.value = createEmptyLogMeta()
+  logTailLines.value = 300
+  logFollow.value = true
   taskFiles.value = []
   taskHasSite.value = false
   resultContent.value = ''
@@ -1550,6 +1722,8 @@ async function loadResultForTask() {
   const data = await res.json()
   taskFiles.value = data.files || []
   taskHasSite.value = !!data.has_site
+  filesTotal.value = data.total || taskFiles.value.length
+  filesTruncated.value = data.truncated || false
 
   const type = selectedTask.value.type
   if (type === 'ask') {
@@ -1577,6 +1751,8 @@ async function loadFiles() {
     const data = await res.json()
     taskFiles.value = data.files || []
     taskHasSite.value = !!data.has_site
+    filesTotal.value = data.total || taskFiles.value.length
+    filesTruncated.value = data.truncated || false
   }
 }
 
@@ -1682,11 +1858,19 @@ async function loadLogs() {
   loadingLogs.value = true
   try {
     const res = await fetch(
-      `${API_BASE}/tasks/${selectedTask.value.id}/logs?password=${encodeURIComponent(savedPassword)}&phase=${encodeURIComponent(activeLogPhase.value)}`
+      `${API_BASE}/tasks/${selectedTask.value.id}/logs?password=${encodeURIComponent(savedPassword)}&phase=${encodeURIComponent(activeLogPhase.value)}&max_lines=${logTailLines.value}&max_bytes=${LOG_PREVIEW_BYTES}`
     )
     if (res.ok) {
       const data = await res.json()
       logContent.value = data.logs || ''
+      logMeta.value = {
+        log_path: data.log_path || '',
+        total_bytes: data.total_bytes || 0,
+        display_bytes: data.display_bytes || 0,
+        displayed_line_count: data.displayed_line_count || 0,
+        truncated: !!data.truncated,
+        preview_mode: data.preview_mode || 'tail',
+      }
       if (data.available_phases?.length) {
         availableLogPhases.value = data.available_phases
         if (!availableLogPhases.value.includes(activeLogPhase.value)) {
@@ -1694,16 +1878,18 @@ async function loadLogs() {
         }
       }
       await nextTick()
-      scrollLogsToBottom()
+      scrollLogsToBottom(false)
     }
   } finally { loadingLogs.value = false }
 }
 
-function scrollLogsToBottom() {
-  if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
+function scrollLogsToBottom(force = true) {
+  if (logEl.value && (force || logFollow.value)) {
+    logEl.value.scrollTop = logEl.value.scrollHeight
+  }
 }
 
-const logLineCount = computed(() => logContent.value ? logContent.value.split('\n').length : 0)
+const logLineCount = computed(() => logMeta.value.displayed_line_count || (logContent.value ? logContent.value.split('\n').length : 0))
 
 function switchToFiles() {
   activeTab.value = 'files'
@@ -1721,6 +1907,32 @@ watch(activeTab, tab => {
   if (tab === 'logs') loadLogs()
   else if (tab === 'files' && taskFiles.value.length === 0) loadFiles()
   else if (tab === 'result' && !resultContent.value) loadResultForTask()
+})
+
+// Render mermaid diagrams after markdown content is updated
+watch(renderedResult, () => {
+  nextTick(() => {
+    if (resultMarkdownRef.value) renderMermaidInElement(resultMarkdownRef.value)
+  })
+})
+
+watch(renderedActiveFile, () => {
+  nextTick(() => {
+    if (fileMarkdownRef.value) renderMermaidInElement(fileMarkdownRef.value)
+  })
+})
+
+// Re-render mermaid on theme change (reset rendered flag so diagrams re-render with new theme)
+watch(isDark, () => {
+  initMermaid()
+  nextTick(() => {
+    document.querySelectorAll('.mermaid-block').forEach(block => {
+      delete block.dataset.rendered
+    })
+    if (resultMarkdownRef.value) renderMermaidInElement(resultMarkdownRef.value, true)
+    if (fileMarkdownRef.value) renderMermaidInElement(fileMarkdownRef.value, true)
+    if (fullscreenMarkdownRef.value) renderMermaidInElement(fullscreenMarkdownRef.value, true)
+  })
 })
 
 async function downloadTask() {
@@ -2172,6 +2384,7 @@ function startAutoRefresh() {
 }
 
 onMounted(() => {
+  initMermaid()
   const pw = getPassword()
   if (pw) { savedPassword = pw; authenticated.value = true; loadTasks(); loadProjects() }
   startAutoRefresh()
@@ -2530,7 +2743,7 @@ onUnmounted(() => {
 .tab-content {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -2690,7 +2903,81 @@ onUnmounted(() => {
   color: #cbd5e1;
 }
 .markdown-view :deep(tr:nth-child(even)) { background: #1e293b40; }
-.markdown-view :deep(img) { max-width: 100%; border-radius: 6px; }
+.markdown-view :deep(img) { max-width: 100%; border-radius: 6px; cursor: pointer; }
+.markdown-view :deep(img):hover { opacity: 0.9; }
+
+/* ===== Mermaid Blocks (inside markdown-view) ===== */
+.markdown-view :deep(.mermaid-block) {
+  position: relative;
+  margin: 1rem 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1e293b;
+  border: 1px solid #334155;
+}
+.markdown-view :deep(.mermaid-rendered) {
+  padding: 1rem;
+  overflow-x: auto;
+}
+.markdown-view :deep(.mermaid-rendered svg) {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-view :deep(.mermaid-error) {
+  color: #f87171;
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.markdown-view :deep(.mermaid-source-toggle) {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 10;
+  background: rgba(0,0,0,0.6);
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.markdown-view :deep(.mermaid-source-toggle:hover) {
+  background: rgba(0,0,0,0.8);
+  color: #e2e8f0;
+}
+.markdown-view :deep(.mermaid-source-code) {
+  display: none;
+  padding: 1rem;
+  background: #0f172a;
+  border-top: 1px solid #334155;
+}
+.markdown-view :deep(.mermaid-source-code.visible) {
+  display: block;
+}
+.markdown-view :deep(.mermaid-source-code pre) {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ===== Image Fullscreen ===== */
+.image-fullscreen-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  max-height: 80vh;
+  overflow: auto;
+}
+.image-fullscreen-img {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
 
 /* ===== Files Layout ===== */
 .files-layout {
@@ -2857,15 +3144,16 @@ onUnmounted(() => {
 .log-terminal {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   padding: 12px 16px;
   background: #020617;
   color: #4ade80;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 12.5px;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  word-break: normal;
+  tab-size: 2;
   margin: 0;
 }
 
@@ -3034,6 +3322,32 @@ onUnmounted(() => {
 .theme-light .markdown-view :deep(td) { border-color: #e2e8f0; color: #334155; }
 .theme-light .markdown-view :deep(tr:nth-child(even)) { background: #f8fafc; }
 
+/* Light mermaid blocks */
+.theme-light .markdown-view :deep(.mermaid-block) { background: #f8fafc; border-color: #e2e8f0; }
+.theme-light .markdown-view :deep(.mermaid-rendered) { background: #ffffff; }
+.theme-light .markdown-view :deep(.mermaid-source-code) { background: #f1f5f9; border-color: #e2e8f0; }
+.theme-light .markdown-view :deep(.mermaid-source-code pre) { color: #64748b; }
+.theme-light .markdown-view :deep(.mermaid-error) { color: #dc2626; }
+
+/* ===== Preview Notice ===== */
+.preview-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #172554;
+  border-bottom: 1px solid #1d4ed8;
+  color: #bfdbfe;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.preview-notice--terminal {
+  background: #111827;
+  border-bottom-color: #334155;
+  color: #94a3b8;
+}
+
 /* Light file tree */
 .theme-light .file-tree {
   background: #f8fafc;
@@ -3063,6 +3377,18 @@ onUnmounted(() => {
 
 /* Light empty states */
 .theme-light .empty-content { color: #94a3b8; }
+
+.theme-light .preview-notice {
+  background: #eff6ff;
+  border-bottom-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.theme-light .preview-notice--terminal {
+  background: #f8fafc;
+  border-bottom-color: #e2e8f0;
+  color: #64748b;
+}
 
 /* Light output hint */
 .theme-light .output-hint {
