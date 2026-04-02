@@ -462,73 +462,47 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
     return augment_prompt(base, requirement, project_root=cwd, phase_hint='do execute code write')
 
 
-def phase_evolve(task: str, cwd: Path, iter_n: int) -> str:
+def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '') -> str:
     """
-    EVOLVE 阶段：辩证评估本次成果，规划下一步最有价值的改进。
-    输出 process/evolve-N.md，末行必须是 NEXT_TASK: <任务> 或 NEXT_TASK: DONE
+    EVOLVE 阶段：评估本次成果，决定下一步。
+    prompt 故意保持简短，兼容弱模型。
+    status_summary 由 driver 预提取注入，避免模型自己读文件出错。
     """
-    ctx_files = []
-    for name in ['RESULT.md', 'process/05-review.md']:
-        p = cwd / name
-        if p.exists():
-            ctx_files.append(str(p))
-    prev_iter = cwd / 'process' / f'iter-{iter_n - 1}'
-    if prev_iter.exists() and (prev_iter / 'result.md').exists():
-        ctx_files.append(str(prev_iter / 'result.md'))
-    context_hint = '\n'.join(f'   - {f}' for f in ctx_files) if ctx_files else '   （暂无）'
     evolve_file = cwd / 'process' / f'evolve-{iter_n}.md'
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    return f"""你是一个持续进化的系统架构师，遵循辩证法：正题→反题→合题。
+    summary_block = f"""当前状态（已为你提取）：
+---
+{status_summary[:600]}
+---""" if status_summary else f"请用 Read 读取 {cwd}/RESULT.md 了解当前状态。"
 
-当前任务: {task}
+    return f"""原始任务: {task}
 工作目录: {cwd}
 当前迭代: #{iter_n}
 
-【EVOLVE - 进化评估阶段】
+{summary_block}
 
-哲学原则（辩证法三段式）：
-- 正题（Thesis）：本次已完成的成果
-- 反题（Antithesis）：存在的问题、不足、改进空间
-- 合题（Synthesis）：下一步最有价值的改进方向
+你的工作：判断下一步最重要的改进是什么。
 
-步骤：
-1. 读取以下文件，理解现状：
-{context_hint}
+优先级（从高到低）：
+1. 有 bug 或报错 → 写修复任务
+2. 功能明显缺失 → 写补充任务
+3. 体验或性能问题 → 写优化任务
+4. 已经完整没问题 → 写 DONE
 
-2. 辩证评估：
-   - 正题：本次完成了什么？质量如何？
-   - 反题：还有哪些问题？用户最可能遇到什么困难？
-   - 合题：综合以上，下一步最有价值的改进是什么？
+用 Write 将结果写入 {evolve_file}，内容如下：
 
-3. 决策优先级（按顺序）：
-   ① 修复已知 bug 和质量问题（最高优先）
-   ② 补充最常用的缺失功能
-   ③ 性能或体验优化
-   ④ 新特性（最低优先）
-   ⑤ 如果任务已完全完成且无明显改进空间 → DONE
+## 评估 #{iter_n}
+时间: {ts}
+状态: {{一句话描述现在的状态}}
+下一步: {{一句话描述最重要的改进，或"已完成"}}
 
-4. 用 Write 将评估写入 {evolve_file}：
+NEXT_TASK: {{具体任务，或 DONE}}
 
-   # EVOLVE #{iter_n} - 进化评估
-   **时间**: {ts}
-
-   ## 正题（已完成）
-   {{本次成果摘要}}
-
-   ## 反题（不足与问题）
-   {{遗留问题、改进空间、用户痛点}}
-
-   ## 合题（下一步）
-   {{最有价值的下一步改进，具体可执行}}
-
-   NEXT_TASK: {{下一轮任务描述（一句话，具体可执行）或 DONE}}
-
-⚠️ 严格要求：
-- NEXT_TASK 必须是文件最后一行，格式为 "NEXT_TASK: xxx" 或 "NEXT_TASK: DONE"
-- 任务描述要具体可执行，不要模糊（如"优化性能"→"给 X 函数加缓存减少重复计算"）
-- 不要随机改动，要真正有价值的改进
-- 不要重复已完成的工作
+注意：
+- NEXT_TASK 必须是最后一行
+- 只写一个任务，要具体（例如"修复登录返回500"，不要写"优化代码"）
+- 不要重复上一轮已做过的事
 """
 
 

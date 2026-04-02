@@ -500,22 +500,60 @@ def _git_commit_iter(cwd: Path, task: str, iter_n: int) -> bool:
 #  EVOLVE 进化评估
 # ──────────────────────────────────────────────────────────────
 
+def _extract_status_summary(cwd: Path, iter_n: int) -> str:
+    """预提取状态摘要注入 EVOLVE prompt，避免弱模型自己读文件出错"""
+    # 优先用上一轮 iter 结果（最新、最短）
+    prev_iter = cwd / 'process' / f'iter-{iter_n - 1}'
+    if prev_iter.exists() and (prev_iter / 'result.md').exists():
+        return (prev_iter / 'result.md').read_text(encoding='utf-8')[:800]
+    # 回退到 RESULT.md
+    result_md = cwd / 'RESULT.md'
+    if result_md.exists():
+        return result_md.read_text(encoding='utf-8')[:800]
+    return ''
+
+
+def _cleanup_old_iters(cwd: Path, keep: int = 3):
+    """只保留最近 keep 轮的 iter 目录，删除旧的，防止文件无限堆积"""
+    import shutil
+    process_dir = cwd / 'process'
+    if not process_dir.exists():
+        return
+    iter_dirs = sorted(
+        [d for d in process_dir.iterdir()
+         if d.is_dir() and re.match(r'^iter-\d+$', d.name)],
+        key=lambda d: int(d.name.split('-')[1])
+    )
+    for d in iter_dirs[:-keep]:
+        shutil.rmtree(d, ignore_errors=True)
+        print(f"   🗑️  清理旧迭代: {d.name}", flush=True)
+
+
 def _read_next_task(cwd: Path, iter_n: int):
-    """从 evolve-N.md 读取 NEXT_TASK，返回任务字符串或 None（DONE）"""
+    """从 evolve-N.md 读取 NEXT_TASK，容错弱模型的各种乱输出"""
     evolve_file = cwd / 'process' / f'evolve-{iter_n}.md'
     if not evolve_file.exists():
         return None
-    for line in reversed(evolve_file.read_text(encoding='utf-8').splitlines()):
-        line = line.strip()
-        if line.startswith('NEXT_TASK:'):
-            val = line[len('NEXT_TASK:'):].strip()
-            return None if val.upper() == 'DONE' or not val else val
+    text = evolve_file.read_text(encoding='utf-8')
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        # 容错：大小写不敏感，兼容中文冒号
+        normalized = stripped.upper().replace('：', ':')
+        if normalized.startswith('NEXT_TASK:'):
+            # 从原始行中提取冒号后的内容（兼容中英文冒号）
+            colon_pos = stripped.find(':') if ':' in stripped else stripped.find('：')
+            val = stripped[colon_pos + 1:].strip()
+            if not val or val.upper() in ('DONE', '完成', '已完成', 'FINISHED'):
+                return None
+            return val[:200]  # 截断超长描述
     return None
 
 
 def _run_evolve(task: str, cwd: Path, iter_n: int, module: str):
     """运行 EVOLVE 阶段，返回下一轮任务描述（None 表示完成）"""
-    prompt = phase_evolve(task, cwd, iter_n)
+    # 预提取状态摘要，直接注入 prompt，避免弱模型读文件出错
+    summary = _extract_status_summary(cwd, iter_n)
+    prompt = phase_evolve(task, cwd, iter_n, status_summary=summary)
     print(f"\n{'='*60}", flush=True)
     print(f"🧬 EVOLVE #{iter_n} - 辩证进化评估", flush=True)
     print('='*60, flush=True)
@@ -561,6 +599,7 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
 
     iter_n = 1
     current_task = task
+    recent_tasks = []  # 用于检测重复任务（弱模型容易死循环）
 
     while True:
         if should_stop(cwd):
@@ -571,11 +610,17 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
             print(f"\n✅ 已完成 {max_iters} 次迭代，停止", flush=True)
             break
 
-        # EVOLVE：辩证评估，规划下一步
+        # EVOLVE：评估并规划下一步（预注入摘要，兼容弱模型）
         next_task = _run_evolve(current_task, cwd, iter_n, module)
         if next_task is None:
             print(f"\n✅ EVOLVE 判断任务已完成，停止迭代", flush=True)
             break
+
+        # 重复任务检测：弱模型容易一直输出同一个任务
+        if next_task in recent_tasks[-2:]:
+            print(f"\n⚠️  检测到重复任务，停止迭代: {next_task}", flush=True)
+            break
+        recent_tasks.append(next_task)
 
         print(f"\n🔄 迭代 #{iter_n}: {next_task}", flush=True)
 
@@ -588,6 +633,9 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
 
         # git commit 记录本次迭代
         _git_commit_iter(cwd, next_task, iter_n)
+
+        # 清理旧 iter 目录，只保留最近 3 轮，防止文件无限堆积
+        _cleanup_old_iters(cwd, keep=3)
 
         current_task = next_task
         iter_n += 1
