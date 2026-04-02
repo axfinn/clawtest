@@ -462,6 +462,76 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
     return augment_prompt(base, requirement, project_root=cwd, phase_hint='do execute code write')
 
 
+def phase_evolve(task: str, cwd: Path, iter_n: int) -> str:
+    """
+    EVOLVE 阶段：辩证评估本次成果，规划下一步最有价值的改进。
+    输出 process/evolve-N.md，末行必须是 NEXT_TASK: <任务> 或 NEXT_TASK: DONE
+    """
+    ctx_files = []
+    for name in ['RESULT.md', 'process/05-review.md']:
+        p = cwd / name
+        if p.exists():
+            ctx_files.append(str(p))
+    prev_iter = cwd / 'process' / f'iter-{iter_n - 1}'
+    if prev_iter.exists() and (prev_iter / 'result.md').exists():
+        ctx_files.append(str(prev_iter / 'result.md'))
+    context_hint = '\n'.join(f'   - {f}' for f in ctx_files) if ctx_files else '   （暂无）'
+    evolve_file = cwd / 'process' / f'evolve-{iter_n}.md'
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    return f"""你是一个持续进化的系统架构师，遵循辩证法：正题→反题→合题。
+
+当前任务: {task}
+工作目录: {cwd}
+当前迭代: #{iter_n}
+
+【EVOLVE - 进化评估阶段】
+
+哲学原则（辩证法三段式）：
+- 正题（Thesis）：本次已完成的成果
+- 反题（Antithesis）：存在的问题、不足、改进空间
+- 合题（Synthesis）：下一步最有价值的改进方向
+
+步骤：
+1. 读取以下文件，理解现状：
+{context_hint}
+
+2. 辩证评估：
+   - 正题：本次完成了什么？质量如何？
+   - 反题：还有哪些问题？用户最可能遇到什么困难？
+   - 合题：综合以上，下一步最有价值的改进是什么？
+
+3. 决策优先级（按顺序）：
+   ① 修复已知 bug 和质量问题（最高优先）
+   ② 补充最常用的缺失功能
+   ③ 性能或体验优化
+   ④ 新特性（最低优先）
+   ⑤ 如果任务已完全完成且无明显改进空间 → DONE
+
+4. 用 Write 将评估写入 {evolve_file}：
+
+   # EVOLVE #{iter_n} - 进化评估
+   **时间**: {ts}
+
+   ## 正题（已完成）
+   {{本次成果摘要}}
+
+   ## 反题（不足与问题）
+   {{遗留问题、改进空间、用户痛点}}
+
+   ## 合题（下一步）
+   {{最有价值的下一步改进，具体可执行}}
+
+   NEXT_TASK: {{下一轮任务描述（一句话，具体可执行）或 DONE}}
+
+⚠️ 严格要求：
+- NEXT_TASK 必须是文件最后一行，格式为 "NEXT_TASK: xxx" 或 "NEXT_TASK: DONE"
+- 任务描述要具体可执行，不要模糊（如"优化性能"→"给 X 函数加缓存减少重复计算"）
+- 不要随机改动，要真正有价值的改进
+- 不要重复已完成的工作
+"""
+
+
 def phase_publish(task: str, cwd: Path) -> str:
     """--publish 触发，由 publish.py 管理"""
     from publish import publish_prompt

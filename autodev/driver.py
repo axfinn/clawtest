@@ -9,12 +9,13 @@ AutoDev - 万能任务助手
 
 import argparse
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from runner import CC_MODULE, normalize_module, run_phase, runtime_display_name
-from phases import PHASE_LIST, phase_ask, phase_extend
+from phases import PHASE_LIST, phase_ask, phase_extend, phase_evolve
 from skills import list_skills
 from init import init_project
 from state import (
@@ -454,7 +455,151 @@ def _spawn_background(args) -> None:
     print(f"   实时查看: tail -f {bg_log}")
 
 
-def _parse_subcmd(subcmd: str):
+# ──────────────────────────────────────────────────────────────
+#  Git 版本追踪
+# ──────────────────────────────────────────────────────────────
+
+def _ensure_git(cwd: Path) -> bool:
+    """确保目录是 git 仓库，不是则初始化"""
+    if (cwd / '.git').exists():
+        return True
+    r = subprocess.run(['git', 'init'], cwd=str(cwd), capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"   ⚠️ git init 失败: {r.stderr[:80]}", flush=True)
+        return False
+    # 初始提交
+    subprocess.run(['git', 'add', '-A'], cwd=str(cwd), capture_output=True)
+    subprocess.run(['git', 'commit', '-m', 'autodev: project init'],
+                   cwd=str(cwd), capture_output=True)
+    print(f"   📦 git init: {cwd}", flush=True)
+    return True
+
+
+def _git_commit_iter(cwd: Path, task: str, iter_n: int) -> bool:
+    """提交当前迭代到 git"""
+    short = task[:60].replace('"', "'").replace('\n', ' ')
+    msg = f"autodev: iter-{iter_n} - {short}" if iter_n > 0 else f"autodev: init - {short}"
+    subprocess.run(['git', 'add', '-A'], cwd=str(cwd), capture_output=True)
+    r = subprocess.run(['git', 'commit', '-m', msg],
+                       cwd=str(cwd), capture_output=True, text=True)
+    if r.returncode == 0:
+        h = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                           cwd=str(cwd), capture_output=True, text=True)
+        commit_hash = h.stdout.strip() if h.returncode == 0 else ''
+        print(f"   📦 git [{commit_hash}]: {msg}", flush=True)
+        return True
+    out = r.stdout + r.stderr
+    if 'nothing to commit' in out:
+        print(f"   📦 git: 无变更，跳过 commit", flush=True)
+        return True
+    print(f"   ⚠️ git commit 失败: {out[:100]}", flush=True)
+    return False
+
+
+# ──────────────────────────────────────────────────────────────
+#  EVOLVE 进化评估
+# ──────────────────────────────────────────────────────────────
+
+def _read_next_task(cwd: Path, iter_n: int):
+    """从 evolve-N.md 读取 NEXT_TASK，返回任务字符串或 None（DONE）"""
+    evolve_file = cwd / 'process' / f'evolve-{iter_n}.md'
+    if not evolve_file.exists():
+        return None
+    for line in reversed(evolve_file.read_text(encoding='utf-8').splitlines()):
+        line = line.strip()
+        if line.startswith('NEXT_TASK:'):
+            val = line[len('NEXT_TASK:'):].strip()
+            return None if val.upper() == 'DONE' or not val else val
+    return None
+
+
+def _run_evolve(task: str, cwd: Path, iter_n: int, module: str):
+    """运行 EVOLVE 阶段，返回下一轮任务描述（None 表示完成）"""
+    prompt = phase_evolve(task, cwd, iter_n)
+    print(f"\n{'='*60}", flush=True)
+    print(f"🧬 EVOLVE #{iter_n} - 辩证进化评估", flush=True)
+    print('='*60, flush=True)
+    ok = run_phase(prompt, cwd, f"EVOLVE #{iter_n}", timeout=600, module=module)
+    if not ok:
+        print(f"   ⚠️ EVOLVE 阶段异常，停止迭代", flush=True)
+        return None
+    return _read_next_task(cwd, iter_n)
+
+
+# ──────────────────────────────────────────────────────────────
+#  无限迭代主循环
+# ──────────────────────────────────────────────────────────────
+
+def run_loop(task: str, cwd: Path, max_iters: int = 0,
+             build: bool = False, publish: bool = False,
+             push: bool = False, module: str = CC_MODULE):
+    """
+    无限迭代模式（哲学：正题→反题→合题，循环进化）：
+    1. 完整执行初始任务（6 阶段）
+    2. EVOLVE 辩证评估 → 规划下一步最有价值的改进
+    3. extend 执行改进
+    4. git commit 记录版本
+    5. 循环直到 STOP 信号 / EVOLVE 说 DONE / 达到 max_iters
+    """
+    module = normalize_module(module)
+    cwd.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"♾️  AutoDev 无限迭代模式（辩证进化）", flush=True)
+    print(f"   任务: {task}", flush=True)
+    print(f"   目录: {cwd}", flush=True)
+    print(f"   最大迭代: {'无限' if max_iters == 0 else max_iters}", flush=True)
+    print(f"   停止方式: autodev-stop --path {cwd}", flush=True)
+    print('='*60, flush=True)
+
+    # 第 0 轮：完整 6 阶段
+    run(task, cwd, module=module, build=build, publish=publish, push=push)
+
+    # git 初始化 + 第 0 轮 commit
+    _ensure_git(cwd)
+    _git_commit_iter(cwd, task, 0)
+
+    iter_n = 1
+    current_task = task
+
+    while True:
+        if should_stop(cwd):
+            print(f"\n🛑 收到终止信号，在迭代 #{iter_n} 前停止", flush=True)
+            break
+
+        if max_iters > 0 and iter_n > max_iters:
+            print(f"\n✅ 已完成 {max_iters} 次迭代，停止", flush=True)
+            break
+
+        # EVOLVE：辩证评估，规划下一步
+        next_task = _run_evolve(current_task, cwd, iter_n, module)
+        if next_task is None:
+            print(f"\n✅ EVOLVE 判断任务已完成，停止迭代", flush=True)
+            break
+
+        print(f"\n🔄 迭代 #{iter_n}: {next_task}", flush=True)
+
+        if should_stop(cwd):
+            print(f"\n🛑 收到终止信号，在迭代 #{iter_n} 执行前停止", flush=True)
+            break
+
+        # 执行迭代（复用 extend 机制）
+        extend_project(next_task, cwd, module=module)
+
+        # git commit 记录本次迭代
+        _git_commit_iter(cwd, next_task, iter_n)
+
+        current_task = next_task
+        iter_n += 1
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"♾️  迭代结束，共完成 {iter_n - 1} 次迭代", flush=True)
+    print(f"   工作目录: {cwd}", flush=True)
+    print(f"   git 历史: cd {cwd} && git log --oneline", flush=True)
+    print('='*60, flush=True)
+
+
+
     """解析 ask/extend 子命令：python3 driver.py <subcmd> "内容" [--path dir] [--bg]"""
     sub = argparse.ArgumentParser(prog=f'autodev {subcmd}')
     sub.add_argument('content', nargs='?', default='',
@@ -566,6 +711,8 @@ def main():
                         help='serve 预览端口（默认 8000）')
     parser.add_argument('--process', action='store_true',
                         help='serve 时直接预览 process/ 执行过程目录')
+    parser.add_argument('--loop', nargs='?', const=0, type=int, default=None, metavar='N',
+                        help='无限迭代模式（--loop 无限，--loop N 最多 N 次迭代）')
     parser.add_argument('--bg', action='store_true',
                         help='后台运行（自动 setsid + 日志重定向，无需 nohup &）')
 
@@ -613,8 +760,15 @@ def main():
         print(f"📁 自动创建项目目录: {cwd}")
 
     start = max(0, args.start_phase - 1)
-    run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish,
-        push=args.push, serve=args.serve, module=args.module)
+    loop_n = getattr(args, 'loop', None)
+    if loop_n is not None:
+        # --loop 模式：无限迭代（loop_n=0 无限，loop_n=N 最多 N 次）
+        run_loop(args.task, cwd, max_iters=loop_n,
+                 build=args.build, publish=args.publish,
+                 push=args.push, module=args.module)
+    else:
+        run(args.task, cwd, start_phase=start, build=args.build, publish=args.publish,
+            push=args.push, serve=args.serve, module=args.module)
 
 
 if __name__ == '__main__':
