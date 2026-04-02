@@ -559,13 +559,26 @@ def _read_next_task(cwd: Path, iter_n: int):
     return None
 
 
+def _extract_review_score(cwd: Path) -> int:
+    """从 05-review.md 提取 SCORE: X/10，返回整数，未找到返回 -1"""
+    review_file = cwd / 'process' / '05-review.md'
+    if not review_file.exists():
+        return -1
+    text = review_file.read_text(encoding='utf-8')
+    m = re.search(r'SCORE[：:]\s*(\d+)\s*/\s*10', text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return -1
+
+
 def _run_evolve(task: str, cwd: Path, iter_n: int, module: str):
     """运行 EVOLVE 阶段，返回下一轮任务描述（None 表示完成）"""
-    # 预提取状态摘要，直接注入 prompt，避免弱模型读文件出错
     summary = _extract_status_summary(cwd, iter_n)
-    prompt = phase_evolve(task, cwd, iter_n, status_summary=summary)
+    score = _extract_review_score(cwd)
+    prompt = phase_evolve(task, cwd, iter_n, status_summary=summary, review_score=score)
     print(f"\n{'='*60}", flush=True)
-    print(f"🧬 EVOLVE #{iter_n} - 辩证进化评估", flush=True)
+    score_str = f"{score}/10" if score >= 0 else "未知"
+    print(f"🧬 EVOLVE #{iter_n} - 辩证进化评估  SCORE: {score_str}", flush=True)
     print('='*60, flush=True)
     ok = run_phase(prompt, cwd, f"EVOLVE #{iter_n}", timeout=600, module=module)
     if not ok:

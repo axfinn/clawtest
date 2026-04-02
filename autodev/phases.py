@@ -216,10 +216,15 @@ def phase_do(task: str, cwd: Path, review_feedback: str = '') -> str:
 3. 执行原则：
    - 产出**完整可用**的结果，不留 TODO / 占位符
    - 立即执行，做合理假设并继续，不要停下来询问
-4. 完成后用 Write 将执行过程写入 {cwd}/process/04-do.md：
+4. **自测（必做）**：实现完成后，检查 {cwd}/process/acceptance_tests.sh 是否存在：
+   - 若存在：用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
+   - 若有 FAIL：直接修复，修复后再次运行，直到全部通过或确认无法修复
+   - 将自测结果记录到 04-do.md
+5. 完成后用 Write 将执行过程写入 {cwd}/process/04-do.md：
    # DO - 执行记录
    ## 完成的工作（逐条）
    ## 产出文件列表（含路径）
+   ## 自测结果（acceptance_tests.sh 通过率）
    ## 遇到的问题及解决方式
 """
     return augment_prompt(base, task, project_root=cwd, phase_hint='do execute code write')
@@ -516,11 +521,12 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
     return augment_prompt(base, requirement, project_root=cwd, phase_hint='do execute code write')
 
 
-def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '') -> str:
+def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '', review_score: int = -1) -> str:
     """
     EVOLVE 阶段：评估本次成果，决定下一步。
     prompt 故意保持简短，兼容弱模型。
     status_summary 由 driver 预提取注入，避免模型自己读文件出错。
+    review_score: 从 05-review.md 提取的 SCORE (0-10)，-1 表示未知
     """
     evolve_file = cwd / 'process' / f'evolve-{iter_n}.md'
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -530,9 +536,20 @@ def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '') ->
 {status_summary[:600]}
 ---""" if status_summary else f"请用 Read 读取 {cwd}/RESULT.md 了解当前状态。"
 
+    # 分数决策提示
+    if review_score >= 8:
+        score_hint = f"REVIEW 评分: {review_score}/10 ✅ 质量良好，除非有明显 bug 否则可以考虑 DONE"
+    elif review_score >= 6:
+        score_hint = f"REVIEW 评分: {review_score}/10 ⚠️ 质量中等，找最重要的一个问题继续优化"
+    elif review_score >= 0:
+        score_hint = f"REVIEW 评分: {review_score}/10 ❌ 质量不足，必须继续改进"
+    else:
+        score_hint = "REVIEW 评分: 未知，根据状态摘要判断"
+
     return f"""原始任务: {task}
 工作目录: {cwd}
 当前迭代: #{iter_n}
+{score_hint}
 
 {summary_block}
 
@@ -542,12 +559,13 @@ def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '') ->
 1. 有 bug 或报错 → 写修复任务
 2. 功能明显缺失 → 写补充任务
 3. 体验或性能问题 → 写优化任务
-4. 已经完整没问题 → 写 DONE
+4. 评分 >= 8 且无明显问题 → 写 DONE
 
 用 Write 将结果写入 {evolve_file}，内容如下：
 
 ## 评估 #{iter_n}
 时间: {ts}
+评分: {review_score}/10
 状态: {{一句话描述现在的状态}}
 下一步: {{一句话描述最重要的改进，或"已完成"}}
 
