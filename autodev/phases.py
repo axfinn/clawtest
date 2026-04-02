@@ -137,7 +137,7 @@ def phase_design(task: str, cwd: Path) -> str:
    - 选择理由（结合奥卡姆剃刀：哪个最简单有效）
 
    ## 架构设计
-   **必须用 Mermaid 图表描述**，禁止只用纯文字：
+   用图表或列表描述（推荐 Mermaid，也可用 ASCII 图或文字列表）：
    ```mermaid
    graph TD
        A[输入] --> B[处理] --> C[输出]
@@ -158,14 +158,22 @@ def phase_design(task: str, cwd: Path) -> str:
 # ─────────────────────────────────────────────────────────────
 # Phase 4: DO  执行
 # ─────────────────────────────────────────────────────────────
-def phase_do(task: str, cwd: Path) -> str:
+def phase_do(task: str, cwd: Path, review_feedback: str = '') -> str:
+    feedback_block = ''
+    if review_feedback:
+        feedback_block = f"""
+⚠️ 上次 REVIEW 发现的问题（本次必须修复）：
+---
+{review_feedback[:500]}
+---
+"""
     base = f"""你是一个全能执行者。
 
 任务: {task}
 工作目录: {cwd}
 
 {AUTO_MODE_PRINCIPLES}
-
+{feedback_block}
 【DO - 执行阶段】
 
 步骤：
@@ -192,7 +200,14 @@ def phase_do(task: str, cwd: Path) -> str:
 # ─────────────────────────────────────────────────────────────
 # Phase 5: REVIEW  审查
 # ─────────────────────────────────────────────────────────────
-def phase_review(task: str, cwd: Path) -> str:
+def phase_review(task: str, cwd: Path, stage: str = 'stage1') -> str:
+    if stage == 'stage2':
+        stage_instruction = """**当前：Stage2 深度验证**
+逐项检查 02-define.md 里的每一条成功标准，全部验证，不能跳过。"""
+    else:
+        stage_instruction = """**当前：Stage1 快速验证**
+只验证核心功能是否能跑通，不需要逐项检查所有标准。"""
+
     base = f"""你是一个严格的质量审查员。
 
 任务: {task}
@@ -202,32 +217,24 @@ def phase_review(task: str, cwd: Path) -> str:
 
 【REVIEW - 审查阶段】
 
-⚠️ 重要：**先写报告框架，再修问题**，确保无论时间多紧迫都有报告产出
+{stage_instruction}
 
-**两阶段验证策略**：
-- Stage 1 (快速验证)：只验证核心功能是否工作，产出一个可运行的最小可用系统
-- Stage 2 (深度验证)：完整检查所有成功标准，逐项验证
+⚠️ 重要：**先写报告框架，再修问题**，确保无论时间多紧迫都有报告产出
 
 步骤：
 1. 读取 {cwd}/process/02-define.md 获取成功标准
 2. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
-3. Stage 1 快速验证（最多 1 轮）：
-   - 验证核心功能是否工作
-   - 发现问题直接用 Edit/Bash 修复
-4. Stage 2 深度验证（最多 2 轮）：
-   - 逐项检查所有成功标准：代码用 Bash 运行，文档通读检查
+3. 按上方验证要求执行检查：
+   - 代码用 Bash 运行验证
    - 发现问题直接用 Edit/Bash 修复目标项目文件
-   - 修复后更新 05-review.md，再次验证
-   - 所有标准 ✅ 则结束循环
-5. 最终在 05-review.md 写明整体质量评估
+   - 修复后更新 05-review.md
+4. 最终在 05-review.md 写明整体质量评估
 
 05-review.md 格式：
-   # REVIEW - 审查报告
+   # REVIEW - 审查报告（{stage}）
    ## 验证清单（逐项 ✅/❌/⚠️）
    | 成功标准 | 状态 | 说明 |
    |---------|------|------|
-   ## Stage 1 快速验证结果
-   ## Stage 2 深度验证结果
    ## 发现的问题及修复情况
    ## 最终质量评估
 """
@@ -237,8 +244,19 @@ def phase_review(task: str, cwd: Path) -> str:
 # ─────────────────────────────────────────────────────────────
 # Phase 6: DELIVER  交付
 # ─────────────────────────────────────────────────────────────
-def phase_deliver(task: str, cwd: Path) -> str:
+def phase_deliver(task: str, cwd: Path, project_path: str = '') -> str:
     short = task[:60].replace('"', "'")
+    # 只读关键文件，避免 context 爆炸
+    key_files = []
+    for name in ['02-define.md', '04-do.md', '05-review.md']:
+        p = cwd / 'process' / name
+        if p.exists():
+            key_files.append(str(p))
+    key_files_hint = '\n'.join(f'   - {f}' for f in key_files) if key_files else f'   - {cwd}/process/'
+
+    # git commit 目标路径：优先用传入的 project_path，否则用 cwd
+    git_target = project_path if project_path else str(cwd)
+
     base = f"""你是一个注重用户体验的交付专家。
 
 任务: {task}
@@ -249,7 +267,8 @@ def phase_deliver(task: str, cwd: Path) -> str:
 【DELIVER - 交付阶段】
 
 步骤：
-1. 读取 {cwd}/process/ 下所有文档了解全貌
+1. 读取以下关键文档（不要读所有文件，只读这几个）：
+{key_files_hint}
 2. 用 Glob 列出所有产出文件
 3. 用 Write 创建 {cwd}/RESULT.md（用户最终看的交付报告）：
 
@@ -264,20 +283,14 @@ def phase_deliver(task: str, cwd: Path) -> str:
 
    ## 如何使用
 
-   ## 整体架构图
-   ```mermaid
-   graph LR
-       ...
-   ```
-
    ## 过程摘要
-   - DISCOVER: 调研到的关键信息
    - DEFINE: 核心问题定义
    - DESIGN: 选择的方案
    - DO: 主要完成的工作
    - REVIEW: 质量情况
 
-4. 在目标项目目录执行 git commit（从任务描述中获取项目路径）：
+4. 在项目目录 {git_target} 执行 git commit：
+   先检查是否是 git 仓库（git status），如果不是先 git init，然后：
    ```
    git add .
    git commit -m "完成: {short}"

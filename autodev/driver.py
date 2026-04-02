@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from runner import CC_MODULE, normalize_module, run_phase, runtime_display_name
+from runner import CC_MODULE, normalize_module, run_phase, runtime_display_name, reset_circuit_breaker
 from phases import PHASE_LIST, phase_ask, phase_extend, phase_evolve
 from skills import list_skills
 from init import init_project
@@ -96,6 +96,7 @@ def run(task: str, cwd: Path, start_phase: int = 0,
         push: bool = False, serve: bool = False,
         module: str = CC_MODULE):
     module = normalize_module(module)
+    reset_circuit_breaker()  # 每次新任务重置熔断，避免跨任务污染
 
     cwd.mkdir(parents=True, exist_ok=True)
     (cwd / 'process').mkdir(exist_ok=True)
@@ -133,13 +134,15 @@ def run(task: str, cwd: Path, start_phase: int = 0,
     # DO 和 REVIEW 的索引（用于 DO→REVIEW 重试循环）
     DO_IDX     = next(i for i, (l, _, _) in enumerate(PHASE_LIST) if 'DO' in l)
     REVIEW_IDX = next(i for i, (l, _, _) in enumerate(PHASE_LIST) if 'REVIEW' in l)
-    MAX_RETRY  = 2   # REVIEW 失败后最多重试 DO+REVIEW 次数
+    MAX_RETRY  = 2   # Stage2 失败后最多重跑 DO+REVIEW 次数（Stage1→Stage2 不消耗次数）
 
-    # 两阶段验证状态（借鉴 Claude Code 两阶段分类器）
-    # Stage 1: 快速验证（只验证核心功能）
-    # Stage 2: 深度验证（完整检查所有成功标准）
-    verify_stage = "stage1"  # 当前验证阶段
+    # 两阶段验证状态
+    # Stage1: 快速验证核心功能；Stage2: 深度验证所有成功标准
+    # Stage1 失败 → 升级到 Stage2（不消耗 retry 次数）
+    # Stage2 失败 → 重跑 DO+REVIEW（消耗 retry 次数，最多 MAX_RETRY 次）
+    in_stage2 = False
     retry_count = 0
+    last_review_failure = ''  # 上次 REVIEW 失败的摘要，注入到 DO 重试 prompt
 
     for i, (label, prompt_fn, timeout) in enumerate(PHASE_LIST):
         if i < start_phase:
@@ -153,61 +156,68 @@ def run(task: str, cwd: Path, start_phase: int = 0,
             break
 
         mark_phase_start(cwd, i, label)
-        prompt = prompt_fn(task, cwd)
 
-        # 为 REVIEW 阶段添加验证阶段标识
-        phase_label = f"{i+1}/{total}  {label}"
+        # REVIEW 阶段：传入 stage 参数让模型知道检查深度
         if i == REVIEW_IDX:
-            if verify_stage == "stage1":
-                phase_label = f"{phase_label} [Stage1-快速验证]"
-            else:
-                phase_label = f"{phase_label} [Stage2-深度验证]"
+            stage = "stage2" if in_stage2 else "stage1"
+            prompt = prompt_fn(task, cwd, stage=stage)
+            stage_tag = "Stage2-深度验证" if in_stage2 else "Stage1-快速验证"
+            phase_label = f"{i+1}/{total}  {label} [{stage_tag}]"
+        else:
+            prompt = prompt_fn(task, cwd)
+            phase_label = f"{i+1}/{total}  {label}"
 
         ok = run_phase(prompt, cwd, phase_label, timeout, module=module)
         mark_phase_done(cwd, i, ok)
-        results[label] = ok
+        results[label] = ok  # 始终用固定 key，最终结果覆盖前面的
 
         if not ok:
             print(f"\n⚠️  [{label}] 执行异常，继续下一阶段...", flush=True)
 
-        # REVIEW 失败 → 自动重跑 DO + REVIEW（最多 MAX_RETRY 次）
-        # 实施两阶段验证策略
-        if i == REVIEW_IDX and not ok and retry_count < MAX_RETRY:
-            retry_count += 1
+        # REVIEW 失败处理
+        if i == REVIEW_IDX and not ok:
+            # 读取 REVIEW 报告摘要，供 DO 重试时注入
+            review_file = cwd / 'process' / '05-review.md'
+            if review_file.exists():
+                last_review_failure = review_file.read_text(encoding='utf-8')[:600]
 
-            # Stage 1 失败 → 进入 Stage 2 深度验证
-            if verify_stage == "stage1":
-                print(f"\n🔄 Stage1 快速验证未通过，进入 Stage2 深度验证（第 {retry_count}/{MAX_RETRY} 次）...", flush=True)
-                verify_stage = "stage2"
-                # 重跑 DO
+            if not in_stage2:
+                # Stage1 失败 → 升级到 Stage2，重跑 DO（不消耗 retry 次数）
+                print(f"\n🔄 Stage1 未通过，升级到 Stage2 深度验证，重跑 DO...", flush=True)
+                in_stage2 = True
                 do_label, do_fn, do_timeout = PHASE_LIST[DO_IDX]
-                do_prompt = do_fn(task, cwd)
-                do_ok = run_phase(do_prompt, cwd, f"DO [Stage2] retry-{retry_count}  {do_label}", do_timeout, module=module)
-                results[f"{do_label} (stage2-retry-{retry_count})"] = do_ok
-                # 不重跑 REVIEW，继续当前循环让 REVIEW 以 Stage2 模式执行
+                do_prompt = do_fn(task, cwd, review_feedback=last_review_failure)
+                do_ok = run_phase(do_prompt, cwd, f"DO [Stage2-fix]  {do_label}", do_timeout, module=module)
+                results[do_label] = do_ok  # 覆盖原 DO 结果
+                # continue 让循环重新执行 REVIEW（i 不变，下次以 stage2 模式运行）
                 continue
-            else:
-                # Stage 2 失败 → 继续重试
-                print(f"\n🔄 Stage2 深度验证未通过，重跑 DO + REVIEW（第 {retry_count}/{MAX_RETRY} 次）...", flush=True)
 
-                # 重跑 DO
+            elif retry_count < MAX_RETRY:
+                # Stage2 失败 → 重跑 DO+REVIEW（消耗 retry 次数）
+                retry_count += 1
+                print(f"\n🔄 Stage2 未通过，重跑 DO+REVIEW（第 {retry_count}/{MAX_RETRY} 次）...", flush=True)
+
                 do_label, do_fn, do_timeout = PHASE_LIST[DO_IDX]
-                do_prompt = do_fn(task, cwd)
-                do_ok = run_phase(do_prompt, cwd, f"DO retry-{retry_count}  {do_label}", do_timeout, module=module)
-                results[f"{do_label} (retry-{retry_count})"] = do_ok
+                do_prompt = do_fn(task, cwd, review_feedback=last_review_failure)
+                do_ok = run_phase(do_prompt, cwd, f"DO [retry-{retry_count}]  {do_label}", do_timeout, module=module)
+                results[do_label] = do_ok
 
-                # 重跑 REVIEW
                 rv_label, rv_fn, rv_timeout = PHASE_LIST[REVIEW_IDX]
-                rv_prompt = rv_fn(task, cwd)
-                ok = run_phase(rv_prompt, cwd, f"REVIEW retry-{retry_count}  {rv_label}", rv_timeout, module=module)
-                results[f"{rv_label} (retry-{retry_count})"] = ok
+                rv_prompt = rv_fn(task, cwd, stage="stage2")
+                ok = run_phase(rv_prompt, cwd, f"REVIEW [retry-{retry_count}]  {rv_label}", rv_timeout, module=module)
+                results[rv_label] = ok
 
                 if ok:
                     print(f"\n✅ 第 {retry_count} 次重试后 REVIEW 通过", flush=True)
-                    verify_stage = "stage1"  # 重置验证阶段
-                elif retry_count >= MAX_RETRY:
-                    print(f"\n⚠️  已达最大重试次数 {MAX_RETRY}，继续交付...", flush=True)
-                    verify_stage = "stage1"  # 重置验证阶段
+                    in_stage2 = False
+                else:
+                    # 更新失败摘要供下次重试
+                    if review_file.exists():
+                        last_review_failure = review_file.read_text(encoding='utf-8')[:600]
+                    if retry_count >= MAX_RETRY:
+                        print(f"\n⚠️  已达最大重试次数 {MAX_RETRY}，继续交付...", flush=True)
+            else:
+                print(f"\n⚠️  已达最大重试次数 {MAX_RETRY}，继续交付...", flush=True)
 
     # 可选：编译构建
     if build:

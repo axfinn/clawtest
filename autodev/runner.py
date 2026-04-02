@@ -22,21 +22,29 @@ CC_MODULE = 'cc'
 CODEX_MODULE = 'codex'
 
 # 空闲超时：连续多少秒无输出视为挂起，强制退出
-IDLE_TIMEOUT = 600  # 秒（10分钟）
-HEARTBEAT_INTERVAL = 30  # 秒
+IDLE_TIMEOUT = 180  # 秒（3分钟，原来600s太长）
+HEARTBEAT_INTERVAL = 20  # 秒
 
 # 熔断机制（借鉴 Claude Code Auto Mode）
 # 连续失败 >= MAX_CONSECUTIVE_FAILURES 或 总失败 >= MAX_TOTAL_FAILURES 时触发熔断
 MAX_CONSECUTIVE_FAILURES = 3
 MAX_TOTAL_FAILURES = 20
 
-# 全局熔断状态（跨阶段追踪）
+# 全局熔断状态（per-run 重置，避免跨任务污染）
 _circuit_state = {
     'consecutive_failures': 0,
     'total_failures': 0,
     'tripped': False,
 }
 _circuit_lock = threading.Lock()
+
+
+def reset_circuit_breaker():
+    """每次新任务开始时重置熔断状态，避免上一个任务的失败污染下一个"""
+    with _circuit_lock:
+        _circuit_state['consecutive_failures'] = 0
+        _circuit_state['total_failures'] = 0
+        _circuit_state['tripped'] = False
 
 
 def normalize_module(module: str) -> str:
