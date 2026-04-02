@@ -109,7 +109,35 @@ def phase_define(task: str, cwd: Path) -> str:
    ## CORE PROBLEM - 一句话核心问题
    为[谁]解决[什么问题]，使其能[达到什么效果]
 
-完成 02-define.md 后立即停止，不要询问用户，不要开始实现。
+   ## 验收条件（ACCEPTANCE CRITERIA）
+   每条必须是可直接用 Bash 运行的命令，结果 0=通过 非0=失败：
+   - cmd: <shell命令>  # 说明
+   - cmd: <shell命令>  # 说明
+   （至少 2 条，最多 5 条，覆盖核心功能）
+
+3. 用 Write 创建 {cwd}/process/acceptance_tests.sh：
+   #!/bin/bash
+   # 验收测试脚本 - 由 DEFINE 阶段生成，REVIEW 阶段执行
+   set -e
+   PASS=0; FAIL=0
+   run_test() {{
+     local desc="$1"; local cmd="$2"
+     echo -n "  [$desc] "
+     if eval "$cmd" > /dev/null 2>&1; then
+       echo "✅ PASS"; PASS=$((PASS+1))
+     else
+       echo "❌ FAIL"; FAIL=$((FAIL+1))
+     fi
+   }}
+   # --- 验收用例（每行一个）---
+   # run_test "描述" "shell命令"
+   <在此填入从验收条件提取的 run_test 行>
+   # ---
+   echo ""
+   echo "结果: $PASS 通过 / $FAIL 失败"
+   [ $FAIL -eq 0 ] && exit 0 || exit 1
+
+完成 02-define.md 和 acceptance_tests.sh 后立即停止，不要询问用户，不要开始实现。
 """
 
 
@@ -208,7 +236,8 @@ def phase_review(task: str, cwd: Path, stage: str = 'stage1') -> str:
         stage_instruction = """**当前：Stage1 快速验证**
 只验证核心功能是否能跑通，不需要逐项检查所有标准。"""
 
-    base = f"""你是一个严格的质量审查员。
+    base = f"""你是一个专门找 bug 的破坏者。你的唯一目标是证明代码有问题。
+你和写代码的人没有任何关系，你只对客观质量负责。不要手软。
 
 任务: {task}
 工作目录: {cwd}
@@ -222,21 +251,33 @@ def phase_review(task: str, cwd: Path, stage: str = 'stage1') -> str:
 ⚠️ 重要：**先写报告框架，再修问题**，确保无论时间多紧迫都有报告产出
 
 步骤：
-1. 读取 {cwd}/process/02-define.md 获取成功标准
-2. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
-3. 按上方验证要求执行检查：
+1. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
+2. **运行验收脚本**（客观评分，不可跳过）：
+   - 检查 {cwd}/process/acceptance_tests.sh 是否存在
+   - 若存在：用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
+   - 记录每条测试的 PASS/FAIL 结果到报告
+3. 读取 {cwd}/process/02-define.md 获取成功标准，按 {stage} 要求逐项检查：
    - 代码用 Bash 运行验证
    - 发现问题直接用 Edit/Bash 修复目标项目文件
-   - 修复后更新 05-review.md
-4. 最终在 05-review.md 写明整体质量评估
+   - 修复后重新运行验收脚本验证
+4. 更新 05-review.md 写明整体质量评估
 
 05-review.md 格式：
    # REVIEW - 审查报告（{stage}）
+
+   ## 验收脚本结果
+   通过: X / 失败: Y
+   | 测试 | 结果 |
+   |------|------|
+
    ## 验证清单（逐项 ✅/❌/⚠️）
    | 成功标准 | 状态 | 说明 |
    |---------|------|------|
+
    ## 发现的问题及修复情况
+
    ## 最终质量评估
+   SCORE: X/10（基于验收脚本通过率和成功标准覆盖率）
 """
     return augment_prompt(base, task, project_root=cwd, phase_hint='review quality simplify')
 
