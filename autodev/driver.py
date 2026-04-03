@@ -571,7 +571,7 @@ def _extract_review_score(cwd: Path) -> int:
     return -1
 
 
-def _run_evolve(task: str, cwd: Path, iter_n: int, module: str):
+def _run_evolve(task: str, cwd: Path, iter_n: int, module: str, score_history: list):
     """运行 EVOLVE 阶段，返回下一轮任务描述（None 表示完成）"""
     summary = _extract_status_summary(cwd, iter_n)
     score = _extract_review_score(cwd)
@@ -582,8 +582,27 @@ def _run_evolve(task: str, cwd: Path, iter_n: int, module: str):
     print('='*60, flush=True)
     ok = run_phase(prompt, cwd, f"EVOLVE #{iter_n}", timeout=600, module=module)
     if not ok:
-        print(f"   ⚠️ EVOLVE 阶段异常，停止迭代", flush=True)
+        # fail-open：EVOLVE 异常时不停止，用上一轮任务继续（最多容忍 2 次）
+        evolve_failures = score_history.count('fail')
+        if evolve_failures < 2:
+            score_history.append('fail')
+            print(f"   ⚠️ EVOLVE 异常（第 {evolve_failures+1}/2 次容忍），继续上一轮任务", flush=True)
+            return task  # 返回原任务继续迭代
+        print(f"   ❌ EVOLVE 连续异常 2 次，停止迭代", flush=True)
         return None
+
+    # 记录本轮评分（用于趋势熔断）
+    if score >= 0:
+        score_history.append(score)
+
+    # 评分趋势熔断：连续 3 轮评分波动 <= 1 分，视为已收敛
+    numeric_scores = [s for s in score_history if isinstance(s, int)]
+    if len(numeric_scores) >= 3:
+        recent = numeric_scores[-3:]
+        if max(recent) - min(recent) <= 1 and min(recent) >= 7:
+            print(f"\n📊 评分趋于平稳（近3轮: {recent}），任务已收敛，停止迭代", flush=True)
+            return None
+
     return _read_next_task(cwd, iter_n)
 
 
@@ -623,6 +642,7 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
     iter_n = 1
     current_task = task
     recent_tasks = []  # 用于检测重复任务（弱模型容易死循环）
+    score_history = []  # 评分历史，用于趋势熔断和 fail-open 计数
 
     while True:
         if should_stop(cwd):
@@ -634,7 +654,7 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
             break
 
         # EVOLVE：评估并规划下一步（预注入摘要，兼容弱模型）
-        next_task = _run_evolve(current_task, cwd, iter_n, module)
+        next_task = _run_evolve(current_task, cwd, iter_n, module, score_history)
         if next_task is None:
             print(f"\n✅ EVOLVE 判断任务已完成，停止迭代", flush=True)
             break
@@ -670,7 +690,7 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
     print('='*60, flush=True)
 
 
-
+def _parse_subcmd(subcmd: str):
     """解析 ask/extend 子命令：python3 driver.py <subcmd> "内容" [--path dir] [--bg]"""
     sub = argparse.ArgumentParser(prog=f'autodev {subcmd}')
     sub.add_argument('content', nargs='?', default='',

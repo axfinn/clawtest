@@ -226,6 +226,12 @@ def phase_do(task: str, cwd: Path, review_feedback: str = '') -> str:
    ## 产出文件列表（含路径）
    ## 自测结果（acceptance_tests.sh 通过率）
    ## 遇到的问题及解决方式
+6. **写文件摘要缓存**（供 REVIEW 阶段复用，避免重复读取）：
+   用 Write 创建 {cwd}/process/file-cache.md，格式：
+   # 已读文件摘要（DO 阶段）
+   ## <文件路径>
+   <该文件的关键内容摘要，50字以内>
+   （每个本阶段读取或修改过的关键文件写一条）
 """
     return augment_prompt(base, task, project_root=cwd, phase_hint='do execute code write')
 
@@ -257,7 +263,8 @@ def phase_review(task: str, cwd: Path, stage: str = 'stage1') -> str:
 
 步骤：
 1. 立即用 Write 创建 {cwd}/process/05-review.md 报告框架（先占位）
-2. **运行验收脚本**（客观评分，不可跳过）：
+2. **复用文件摘要缓存**（如果存在 {cwd}/process/file-cache.md，先读取它，避免重复读取已知文件）
+3. **运行验收脚本**（客观评分，不可跳过）：
    - 检查 {cwd}/process/acceptance_tests.sh 是否存在
    - 若存在：用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
    - 记录每条测试的 PASS/FAIL 结果到报告
