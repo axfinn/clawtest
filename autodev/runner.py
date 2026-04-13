@@ -22,7 +22,7 @@ CC_MODULE = 'cc'
 CODEX_MODULE = 'codex'
 
 # 空闲超时：连续多少秒无输出视为挂起，强制退出
-IDLE_TIMEOUT = 180  # 秒（3分钟，原来600s太长）
+IDLE_TIMEOUT = 1500  # 秒（25分钟，模型思考/生成时间可能很长）
 HEARTBEAT_INTERVAL = 20  # 秒
 
 # 熔断机制（借鉴 Claude Code Auto Mode）
