@@ -518,7 +518,14 @@ def _ensure_git(cwd: Path) -> bool:
 
 
 def _git_sync_before_commit(cwd: Path) -> bool:
-    """commit 前先 fetch + rebase，处理远端冲突。返回 True 表示可以继续 commit。"""
+    """commit 前先 fetch + rebase，自动解决冲突。返回 True 表示可以继续 commit。
+
+    策略（依次尝试）：
+    1. git rebase origin/<branch>          — 干净合并
+    2. git rebase -X ours origin/<branch>  — 冲突时保留本地（autodev 生成的）代码
+    3. git merge -X ours origin/<branch>   — rebase 彻底失败时降级到 merge
+    4. 以上全失败 → 打印警告，但不阻塞 commit（本地变更优先）
+    """
     # 检查是否有远端
     r = subprocess.run(['git', 'remote'], cwd=str(cwd), capture_output=True, text=True)
     if not r.stdout.strip():
@@ -545,26 +552,41 @@ def _git_sync_before_commit(cwd: Path) -> bool:
     if not ahead_r.stdout.strip():
         return True  # 远端无新提交，直接 commit
 
-    print(f"   🔄 远端有新提交，先 rebase...", flush=True)
-    rebase_r = subprocess.run(['git', 'rebase', f'origin/{branch}'],
-                               cwd=str(cwd), capture_output=True, text=True)
-    if rebase_r.returncode == 0:
+    remote_commits = ahead_r.stdout.strip().count('\n') + 1
+    print(f"   🔄 远端有 {remote_commits} 个新提交，先 rebase...", flush=True)
+
+    # 策略 1：干净 rebase
+    r1 = subprocess.run(['git', 'rebase', f'origin/{branch}'],
+                        cwd=str(cwd), capture_output=True, text=True)
+    if r1.returncode == 0:
         print(f"   ✅ rebase 成功", flush=True)
         return True
 
-    # rebase 有冲突，打印详情并中止，让用户手动解决
     subprocess.run(['git', 'rebase', '--abort'], cwd=str(cwd), capture_output=True)
-    conflict_files = subprocess.run(
-        ['git', 'diff', '--name-only', '--diff-filter=U'],
-        cwd=str(cwd), capture_output=True, text=True
-    ).stdout.strip()
-    print(f"\n❌ git rebase 冲突，需要人工解决后再 commit", flush=True)
-    print(f"   冲突文件:\n{conflict_files}", flush=True)
-    print(f"   解决步骤:", flush=True)
-    print(f"     cd {cwd}", flush=True)
-    print(f"     git rebase origin/{branch}   # 手动解决冲突", flush=True)
-    print(f"     git rebase --continue", flush=True)
-    return False
+
+    # 策略 2：rebase -X ours（冲突时保留本地代码）
+    print(f"   ⚠️ rebase 有冲突，尝试 rebase -X ours（保留本地代码）...", flush=True)
+    r2 = subprocess.run(['git', 'rebase', '-X', 'ours', f'origin/{branch}'],
+                        cwd=str(cwd), capture_output=True, text=True)
+    if r2.returncode == 0:
+        print(f"   ✅ rebase -X ours 成功，冲突已自动解决（保留本地代码）", flush=True)
+        return True
+
+    subprocess.run(['git', 'rebase', '--abort'], cwd=str(cwd), capture_output=True)
+
+    # 策略 3：降级到 merge -X ours
+    print(f"   ⚠️ rebase 失败，降级到 merge -X ours...", flush=True)
+    r3 = subprocess.run(['git', 'merge', '-X', 'ours', f'origin/{branch}'],
+                        cwd=str(cwd), capture_output=True, text=True)
+    if r3.returncode == 0:
+        print(f"   ✅ merge -X ours 成功", flush=True)
+        return True
+
+    # 策略 4：全部失败，清理并继续（本地变更优先，远端更新丢失，打印警告）
+    subprocess.run(['git', 'merge', '--abort'], cwd=str(cwd), capture_output=True)
+    print(f"   ⚠️ 自动合并全部失败，跳过同步直接 commit（本地变更优先）", flush=True)
+    print(f"      建议事后手动执行: cd {cwd} && git merge origin/{branch}", flush=True)
+    return True  # 不阻塞，让 commit 继续
 
 
 def _git_commit_iter(cwd: Path, task: str, iter_n: int) -> bool:

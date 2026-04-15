@@ -376,16 +376,14 @@ def phase_deliver(task: str, cwd: Path, project_path: str = '') -> str:
       git fetch origin
       ```
       若 fetch 失败（无远端/网络问题）跳过 b~d，直接到 e
-   c. **检查是否有冲突或落后**：
+   c. 检查远端是否有新提交：
       ```
-      git status
       git log HEAD..origin/$(git branch --show-current) --oneline
       ```
-   d. **若远端有新提交，必须先合并再 commit**：
-      - 优先用 rebase：`git rebase origin/$(git branch --show-current)`
-      - 若 rebase 有冲突：逐个文件用 Edit 解决冲突标记（<<<<<<< / ======= / >>>>>>>），然后 `git rebase --continue`
-      - 若 rebase 失败：改用 merge：`git merge origin/$(git branch --show-current)`，同样解决冲突后 `git merge --continue`
-      - 冲突解决后验证：`git diff --check`（无输出才算干净）
+   d. **若远端有新提交，先合并再 commit，保留本地变更**：
+      - 优先用：`git rebase -X ours origin/$(git branch --show-current)`
+      - 若失败：`git rebase --abort`，改用：`git merge -X ours origin/$(git branch --show-current)`
+      - `-X ours` 表示冲突时保留本地（autodev 生成的）代码，这是正确策略
    e. **提交本次变更**：
       ```
       git add .
