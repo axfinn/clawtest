@@ -349,45 +349,77 @@ def _next_iter_index(cwd: Path) -> int:
     return max_n + 1
 
 
-def extend_project(requirement: str, cwd: Path, module: str = CC_MODULE):
-    """在已有项目目录上追加新需求，走精简迭代流程"""
+def extend_project(requirement: str, cwd: Path, module: str = CC_MODULE,
+                   max_retry: int = 2) -> bool:
+    """在已有项目目录上追加新需求，走精简迭代流程。
+
+    内置重试：若验收测试失败（result.md 含 BLOCKED 标记），最多重试 max_retry 次。
+    实在无解时停止并打印人工介入指引，返回 False。
+    """
     if not cwd.exists():
         print(f"❌ 项目目录不存在: {cwd}", flush=True)
         print(f"   请先用 autodev \"初始任务\" --path {cwd} 创建项目", flush=True)
-        return
+        return False
 
     module = normalize_module(module)
-
-    iter_n = _next_iter_index(cwd)
-    iter_dir = cwd / 'process' / f'iter-{iter_n}'
-    iter_dir.mkdir(parents=True, exist_ok=True)
     (cwd / '.autodev' / 'logs').mkdir(parents=True, exist_ok=True)
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"🔄 AutoDev extend  迭代追加模式", flush=True)
-    print(f"   项目: {cwd}", flush=True)
-    print(f"   迭代: #{iter_n}", flush=True)
-    print(f"   新需求: {requirement}", flush=True)
-    print(f"   产出目录: {iter_dir}", flush=True)
-    print(f"   模块: {runtime_display_name(module)} ({module})", flush=True)
-    print('='*60, flush=True)
+    for attempt in range(1, max_retry + 2):  # 1 次正常 + max_retry 次重试
+        iter_n = _next_iter_index(cwd)
+        iter_dir = cwd / 'process' / f'iter-{iter_n}'
+        iter_dir.mkdir(parents=True, exist_ok=True)
 
-    # 记录本次迭代信息
-    st = load_state(cwd)
-    iters = st.get('iterations', [])
-    iters.append({'n': iter_n, 'requirement': requirement,
-                  'time': datetime.now().isoformat()})
-    st['iterations'] = iters
-    save_state(cwd, st)
+        attempt_tag = f" [重试 {attempt-1}/{max_retry}]" if attempt > 1 else ""
+        print(f"\n{'='*60}", flush=True)
+        print(f"🔄 AutoDev extend  迭代追加模式{attempt_tag}", flush=True)
+        print(f"   项目: {cwd}", flush=True)
+        print(f"   迭代: #{iter_n}", flush=True)
+        print(f"   新需求: {requirement}", flush=True)
+        print(f"   产出目录: {iter_dir}", flush=True)
+        print(f"   模块: {runtime_display_name(module)} ({module})", flush=True)
+        print('='*60, flush=True)
 
-    prompt = phase_extend(requirement, cwd, iter_n)
-    ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=1800, module=module)
+        # 记录本次迭代信息
+        st = load_state(cwd)
+        iters = st.get('iterations', [])
+        iters.append({'n': iter_n, 'requirement': requirement,
+                      'time': datetime.now().isoformat()})
+        st['iterations'] = iters
+        save_state(cwd, st)
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"   {'✅ 迭代完成' if ok else '⚠️  迭代异常'}", flush=True)
-    print(f"   迭代产出: {iter_dir}/result.md", flush=True)
-    print(f"   主报告  : {cwd}/RESULT.md", flush=True)
-    print(f"   问答记录: {cwd}/process/qa.md", flush=True)
+        prompt = phase_extend(requirement, cwd, iter_n)
+        ok = run_phase(prompt, cwd, f"EXTEND iter-{iter_n}", timeout=1800, module=module)
+
+        # 检查 result.md 是否有 BLOCKED 标记（验收测试失败）
+        result_md = iter_dir / 'result.md'
+        blocked_reason = ''
+        if result_md.exists():
+            content = result_md.read_text(encoding='utf-8')
+            m = re.search(r'BLOCKED[：:]\s*(.+)', content)
+            if m:
+                blocked_reason = m.group(1).strip()[:200]
+
+        if not blocked_reason:
+            print(f"\n{'='*60}", flush=True)
+            print(f"   {'✅ 迭代完成' if ok else '⚠️  迭代异常'}", flush=True)
+            print(f"   迭代产出: {iter_dir}/result.md", flush=True)
+            print(f"   主报告  : {cwd}/RESULT.md", flush=True)
+            return ok
+
+        # 有 BLOCKED 标记
+        if attempt <= max_retry:
+            print(f"\n⚠️  迭代 #{iter_n} 验收失败: {blocked_reason}", flush=True)
+            print(f"   🔄 自动重试（第 {attempt}/{max_retry} 次）...", flush=True)
+        else:
+            print(f"\n❌ 迭代连续 {max_retry} 次重试后仍被阻塞，需要人工介入", flush=True)
+            print(f"   阻塞原因: {blocked_reason}", flush=True)
+            print(f"   请检查:", flush=True)
+            print(f"      {result_md}", flush=True)
+            print(f"      {cwd}/process/acceptance_tests.sh", flush=True)
+            print(f"   修复后恢复: autodev extend \"{requirement}\" --path {cwd}", flush=True)
+            return False
+
+    return False
 
 
 # ──────────────────────────────────────────────────────────────
@@ -671,37 +703,8 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
             print(f"\n🛑 收到终止信号，在迭代 #{iter_n} 执行前停止", flush=True)
             break
 
-        # 执行迭代（复用 extend 机制），失败时最多重试 2 次
-        MAX_ITER_RETRY = 2
-        iter_ok = False
-        for attempt in range(1, MAX_ITER_RETRY + 2):  # 1 次正常 + 2 次重试
-            extend_project(next_task, cwd, module=module)
-
-            # 检查 iter result.md 是否有 BLOCKED 标记
-            iter_dir = cwd / 'process' / f'iter-{iter_n}'
-            result_md = iter_dir / 'result.md'
-            blocked_reason = ''
-            if result_md.exists():
-                content = result_md.read_text(encoding='utf-8')
-                m = re.search(r'BLOCKED[：:]\s*(.+)', content)
-                if m:
-                    blocked_reason = m.group(1).strip()[:200]
-
-            if not blocked_reason:
-                iter_ok = True
-                break
-
-            if attempt <= MAX_ITER_RETRY:
-                print(f"\n⚠️  迭代 #{iter_n} 第 {attempt} 次被阻塞: {blocked_reason}", flush=True)
-                print(f"   🔄 重试（第 {attempt}/{MAX_ITER_RETRY} 次）...", flush=True)
-            else:
-                print(f"\n❌ 迭代 #{iter_n} 连续 {MAX_ITER_RETRY} 次重试后仍被阻塞", flush=True)
-                print(f"   阻塞原因: {blocked_reason}", flush=True)
-                print(f"   ⚠️  需要人工介入，请检查:", flush=True)
-                print(f"      {result_md}", flush=True)
-                print(f"      {cwd}/process/acceptance_tests.sh", flush=True)
-                print(f"   恢复命令: autodev extend \"{next_task}\" --path {cwd}", flush=True)
-                break
+        # 执行迭代（内置重试，实在无解会打印人工介入指引）
+        extend_project(next_task, cwd, module=module)
 
         # git commit 记录本次迭代（无论成功失败都记录，方便回溯）
         _git_commit_iter(cwd, next_task, iter_n)
