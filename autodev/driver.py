@@ -517,10 +517,65 @@ def _ensure_git(cwd: Path) -> bool:
     return True
 
 
+def _git_sync_before_commit(cwd: Path) -> bool:
+    """commit 前先 fetch + rebase，处理远端冲突。返回 True 表示可以继续 commit。"""
+    # 检查是否有远端
+    r = subprocess.run(['git', 'remote'], cwd=str(cwd), capture_output=True, text=True)
+    if not r.stdout.strip():
+        return True  # 无远端，跳过
+
+    branch_r = subprocess.run(['git', 'branch', '--show-current'],
+                               cwd=str(cwd), capture_output=True, text=True)
+    branch = branch_r.stdout.strip()
+    if not branch:
+        return True  # detached HEAD，跳过
+
+    # fetch
+    fetch_r = subprocess.run(['git', 'fetch', 'origin'],
+                              cwd=str(cwd), capture_output=True, text=True)
+    if fetch_r.returncode != 0:
+        print(f"   ⚠️ git fetch 失败，跳过同步: {fetch_r.stderr.strip()[:80]}", flush=True)
+        return True  # fetch 失败不阻塞 commit
+
+    # 检查远端是否有新提交
+    ahead_r = subprocess.run(
+        ['git', 'log', f'HEAD..origin/{branch}', '--oneline'],
+        cwd=str(cwd), capture_output=True, text=True
+    )
+    if not ahead_r.stdout.strip():
+        return True  # 远端无新提交，直接 commit
+
+    print(f"   🔄 远端有新提交，先 rebase...", flush=True)
+    rebase_r = subprocess.run(['git', 'rebase', f'origin/{branch}'],
+                               cwd=str(cwd), capture_output=True, text=True)
+    if rebase_r.returncode == 0:
+        print(f"   ✅ rebase 成功", flush=True)
+        return True
+
+    # rebase 有冲突，打印详情并中止，让用户手动解决
+    subprocess.run(['git', 'rebase', '--abort'], cwd=str(cwd), capture_output=True)
+    conflict_files = subprocess.run(
+        ['git', 'diff', '--name-only', '--diff-filter=U'],
+        cwd=str(cwd), capture_output=True, text=True
+    ).stdout.strip()
+    print(f"\n❌ git rebase 冲突，需要人工解决后再 commit", flush=True)
+    print(f"   冲突文件:\n{conflict_files}", flush=True)
+    print(f"   解决步骤:", flush=True)
+    print(f"     cd {cwd}", flush=True)
+    print(f"     git rebase origin/{branch}   # 手动解决冲突", flush=True)
+    print(f"     git rebase --continue", flush=True)
+    return False
+
+
 def _git_commit_iter(cwd: Path, task: str, iter_n: int) -> bool:
-    """提交当前迭代到 git"""
+    """提交当前迭代到 git，commit 前先同步远端"""
     short = task[:60].replace('"', "'").replace('\n', ' ')
     msg = f"autodev: iter-{iter_n} - {short}" if iter_n > 0 else f"autodev: init - {short}"
+
+    # 先同步远端，有冲突则停止
+    if not _git_sync_before_commit(cwd):
+        return False
+
     subprocess.run(['git', 'add', '-A'], cwd=str(cwd), capture_output=True)
     r = subprocess.run(['git', 'commit', '-m', msg],
                        cwd=str(cwd), capture_output=True, text=True)

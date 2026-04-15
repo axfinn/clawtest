@@ -368,12 +368,29 @@ def phase_deliver(task: str, cwd: Path, project_path: str = '') -> str:
    - 若有 FAIL：停止，直接修复目标项目文件，修复后重新运行，直到全部通过才能继续
    - 将通过率写入 RESULT.md 的"完成情况"中
 
-4. 在项目目录 {git_target} 执行 git commit：
-   先检查是否是 git 仓库（git status），如果不是先 git init，然后：
-   ```
-   git add .
-   git commit -m "完成: {short}"
-   ```
+4. 在项目目录 {git_target} 执行 git 操作，严格按以下顺序：
+
+   a. 检查是否是 git 仓库（`git status`），不是则 `git init`
+   b. **拉取远端最新（必须在 commit 之前）**：
+      ```
+      git fetch origin
+      ```
+      若 fetch 失败（无远端/网络问题）跳过 b~d，直接到 e
+   c. **检查是否有冲突或落后**：
+      ```
+      git status
+      git log HEAD..origin/$(git branch --show-current) --oneline
+      ```
+   d. **若远端有新提交，必须先合并再 commit**：
+      - 优先用 rebase：`git rebase origin/$(git branch --show-current)`
+      - 若 rebase 有冲突：逐个文件用 Edit 解决冲突标记（<<<<<<< / ======= / >>>>>>>），然后 `git rebase --continue`
+      - 若 rebase 失败：改用 merge：`git merge origin/$(git branch --show-current)`，同样解决冲突后 `git merge --continue`
+      - 冲突解决后验证：`git diff --check`（无输出才算干净）
+   e. **提交本次变更**：
+      ```
+      git add .
+      git commit -m "完成: {short}"
+      ```
 """
     return augment_prompt(base, task, project_root=cwd, phase_hint='deliver commit sync publish changelog')
 
