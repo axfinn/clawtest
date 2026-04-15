@@ -110,15 +110,28 @@ def phase_define(task: str, cwd: Path) -> str:
    为[谁]解决[什么问题]，使其能[达到什么效果]
 
    ## 验收条件（ACCEPTANCE CRITERIA）
-   每条必须是可直接用 Bash 运行的命令，结果 0=通过 非0=失败：
-   - cmd: <shell命令>  # 说明
-   - cmd: <shell命令>  # 说明
-   （至少 2 条，最多 5 条，覆盖核心功能）
+   ⚠️ 写法强制规范：
+   - 每条必须是**陈述句**，描述系统应达到的状态（禁止疑问句）
+   - 每条必须对应一个可执行的 shell 命令来验证
+   - 测试命令必须**真正运行程序/调用接口**，禁止只检查文件存在
+
+   ❌ 错误示例（禁止这样写）：
+   - 是否能正常启动？
+   - cmd: test -f main.go
+   - cmd: python -c "import app"
+
+   ✅ 正确示例（必须这样写）：
+   - 服务启动后在 8080 端口返回 HTTP 200
+   - cmd: (cd /path/to/project && go run . &) && sleep 3 && curl -sf http://localhost:8080/ && pkill -f 'go run .'
+   - 命令行工具处理输入文件后输出正确结果
+   - cmd: cd /path/to/project && echo 'test input' | python main.py | grep 'expected output'
+
+   （至少 2 条，最多 5 条，覆盖核心功能，每条都要真正验证功能可用）
 
 3. 用 Write 创建 {cwd}/process/acceptance_tests.sh：
    #!/bin/bash
-   # 验收测试脚本 - 由 DEFINE 阶段生成，REVIEW 阶段执行
-   set -e
+   # 验收测试脚本 - 由 DEFINE 阶段生成，DO/REVIEW/DELIVER 阶段执行
+   # ⚠️ 每条测试必须真正运行程序/调用接口，禁止只检查文件存在
    PASS=0; FAIL=0
    run_test() {{
      local desc="$1"; local cmd="$2"
@@ -129,7 +142,7 @@ def phase_define(task: str, cwd: Path) -> str:
        echo "❌ FAIL"; FAIL=$((FAIL+1))
      fi
    }}
-   # --- 验收用例（每行一个）---
+   # --- 验收用例（每行一个，必须真正运行程序）---
    # run_test "描述" "shell命令"
    <在此填入从验收条件提取的 run_test 行>
    # ---
@@ -216,10 +229,11 @@ def phase_do(task: str, cwd: Path, review_feedback: str = '') -> str:
 3. 执行原则：
    - 产出**完整可用**的结果，不留 TODO / 占位符
    - 立即执行，做合理假设并继续，不要停下来询问
-4. **自测（必做）**：实现完成后，检查 {cwd}/process/acceptance_tests.sh 是否存在：
-   - 若存在：用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
-   - 若有 FAIL：直接修复，修复后再次运行，直到全部通过或确认无法修复
-   - 将自测结果记录到 04-do.md
+4. **自测（强制，不可跳过）**：实现完成后必须执行：
+   - 若 {cwd}/process/acceptance_tests.sh 不存在：立即创建（参考 DEFINE 阶段格式），写入真正运行程序的测试命令
+   - 用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
+   - 若有 FAIL：直接修复，修复后再次运行，直到全部通过
+   - 04-do.md 中必须记录"验收测试全部通过"才算本阶段完成，有 FAIL 不能结束
 5. 完成后用 Write 将执行过程写入 {cwd}/process/04-do.md：
    # DO - 执行记录
    ## 完成的工作（逐条）
@@ -289,7 +303,12 @@ def phase_review(task: str, cwd: Path, stage: str = 'stage1') -> str:
    ## 发现的问题及修复情况
 
    ## 最终质量评估
-   SCORE: X/10（基于验收脚本通过率和成功标准覆盖率）
+   验收测试通过率: P/T（P=通过数，T=总数）
+   评分规则（不可主观调整）：
+   - 基础分 = floor(P/T * 10)
+   - 若 acceptance_tests.sh 不存在或无法运行：基础分 = 0
+   - 可在基础分上 ±1 调整（代码质量/边界情况），但不能超过 ±1
+   SCORE: X/10（必须是最后一行，格式固定）
 """
     return augment_prompt(base, task, project_root=cwd, phase_hint='review quality simplify')
 
@@ -333,6 +352,7 @@ def phase_deliver(task: str, cwd: Path, project_path: str = '') -> str:
    |------|------|
 
    ## 完成情况（对照 DEFINE 成功标准逐项）
+   验收测试通过率: X/Y（从步骤 3.5 的结果填入）
 
    ## 如何使用
 
@@ -341,6 +361,12 @@ def phase_deliver(task: str, cwd: Path, project_path: str = '') -> str:
    - DESIGN: 选择的方案
    - DO: 主要完成的工作
    - REVIEW: 质量情况
+
+3.5 **交付前最终验证（强制，不可跳过，必须在 git commit 之前执行）**：
+   - 用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
+   - 若全部通过：继续步骤 4
+   - 若有 FAIL：停止，直接修复目标项目文件，修复后重新运行，直到全部通过才能继续
+   - 将通过率写入 RESULT.md 的"完成情况"中
 
 4. 在项目目录 {git_target} 执行 git commit：
    先检查是否是 git 仓库（git status），如果不是先 git init，然后：
@@ -504,16 +530,18 @@ def phase_extend(requirement: str, cwd: Path, iter_n: int) -> str:
    - 目标项目路径从历史上下文或任务描述中获取
    - 产出完整可运行代码，不留 TODO / 占位符
 
-4. **自验证**：
-   - 用 Bash 运行测试/编译，验证改动无回归
-   - 发现问题直接修复
+4. **自验证（强制，不可跳过）**：
+   - 若 {cwd}/process/acceptance_tests.sh 存在：用 Bash 执行 `bash {cwd}/process/acceptance_tests.sh`
+     - 若有 FAIL：直接修复，修复后再次运行，直到全部通过
+     - 若确实无法修复（尝试 2 次以上仍失败）：在 {iter_dir}/result.md 中明确写 `BLOCKED: <具体原因>`，停止本次迭代
+   - 若不存在：用 Bash 运行编译/单元测试验证改动无回归，发现问题直接修复
 
 5. **记录产出**：用 Write 将本次迭代结果写入 {iter_dir}/result.md：
    # 迭代 {iter_n} 结果
    ## 新需求: {requirement}
    ## 完成的工作
    ## 新增/修改的文件
-   ## 验证结果
+   ## 验证结果（验收测试通过率，或 BLOCKED: 原因）
 
 6. **更新主报告**：用 Edit 在 {cwd}/RESULT.md 末尾追加：
    ## 迭代 {iter_n}: {requirement}
@@ -563,10 +591,13 @@ def phase_evolve(task: str, cwd: Path, iter_n: int, status_summary: str = '', re
 你的工作：判断下一步最重要的改进是什么。
 
 优先级（从高到低）：
-1. 有 bug 或报错 → 写修复任务
-2. 功能明显缺失 → 写补充任务
-3. 体验或性能问题 → 写优化任务
-4. 评分 >= 8 且无明显问题 → 写 DONE
+1. acceptance_tests.sh 有 FAIL，或未运行过 acceptance_tests.sh → 必须写修复任务，禁止 DONE
+2. 有 bug 或报错 → 写修复任务
+3. 功能明显缺失 → 写补充任务
+4. 体验或性能问题 → 写优化任务
+5. acceptance_tests.sh 全部通过 且 评分 >= 8 且无明显问题 → 写 DONE
+
+注意：没有运行 acceptance_tests.sh 的结果 = 视为有 FAIL，不能 DONE
 
 用 Write 将结果写入 {evolve_file}，内容如下：
 

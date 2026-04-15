@@ -671,10 +671,39 @@ def run_loop(task: str, cwd: Path, max_iters: int = 0,
             print(f"\n🛑 收到终止信号，在迭代 #{iter_n} 执行前停止", flush=True)
             break
 
-        # 执行迭代（复用 extend 机制）
-        extend_project(next_task, cwd, module=module)
+        # 执行迭代（复用 extend 机制），失败时最多重试 2 次
+        MAX_ITER_RETRY = 2
+        iter_ok = False
+        for attempt in range(1, MAX_ITER_RETRY + 2):  # 1 次正常 + 2 次重试
+            extend_project(next_task, cwd, module=module)
 
-        # git commit 记录本次迭代
+            # 检查 iter result.md 是否有 BLOCKED 标记
+            iter_dir = cwd / 'process' / f'iter-{iter_n}'
+            result_md = iter_dir / 'result.md'
+            blocked_reason = ''
+            if result_md.exists():
+                content = result_md.read_text(encoding='utf-8')
+                m = re.search(r'BLOCKED[：:]\s*(.+)', content)
+                if m:
+                    blocked_reason = m.group(1).strip()[:200]
+
+            if not blocked_reason:
+                iter_ok = True
+                break
+
+            if attempt <= MAX_ITER_RETRY:
+                print(f"\n⚠️  迭代 #{iter_n} 第 {attempt} 次被阻塞: {blocked_reason}", flush=True)
+                print(f"   🔄 重试（第 {attempt}/{MAX_ITER_RETRY} 次）...", flush=True)
+            else:
+                print(f"\n❌ 迭代 #{iter_n} 连续 {MAX_ITER_RETRY} 次重试后仍被阻塞", flush=True)
+                print(f"   阻塞原因: {blocked_reason}", flush=True)
+                print(f"   ⚠️  需要人工介入，请检查:", flush=True)
+                print(f"      {result_md}", flush=True)
+                print(f"      {cwd}/process/acceptance_tests.sh", flush=True)
+                print(f"   恢复命令: autodev extend \"{next_task}\" --path {cwd}", flush=True)
+                break
+
+        # git commit 记录本次迭代（无论成功失败都记录，方便回溯）
         _git_commit_iter(cwd, next_task, iter_n)
 
         # 清理旧 iter 目录，只保留最近 3 轮，防止文件无限堆积
